@@ -10,6 +10,7 @@ import re
 import struct
 import zipfile
 from s10_models import MODELS, layout_for, render_installer
+from s10_image_binding import verify_binding
 
 ROOT = Path(__file__).resolve().parents[1]
 CHUNK = 1024 ** 3
@@ -49,6 +50,29 @@ def pack_image(archive, name, stream):
     return chunks
 
 
+def verify_packed_images(archive, chunks, inventory):
+    """Bind streamed ZIP payloads to the image hashes checked before packing."""
+    checksums = {name: hashlib.sha256() for name in inventory}
+    sizes = {name: 0 for name in inventory}
+    for line in chunks:
+        name, offset, size, expected, entry = line.split()
+        if name not in inventory or int(offset) * 1024**2 != sizes[name]:
+            raise RuntimeError('Packed image topology mismatch: ' + name)
+        chunk_hash = hashlib.sha256()
+        count = 0
+        with archive.open(entry) as stream:
+            while block := stream.read(1024**2):
+                chunk_hash.update(block)
+                checksums[name].update(block)
+                count += len(block)
+        if count != int(size) or chunk_hash.hexdigest() != expected:
+            raise RuntimeError('Packed payload checksum or size mismatch: ' + entry)
+        sizes[name] += count
+    for name, spec in inventory.items():
+        if sizes[name] != spec['bytes'] or checksums[name].hexdigest() != spec['sha256']:
+            raise RuntimeError('Packed image differs from verified input: ' + name)
+
+
 def build(candidate, kernel, boot, avb, output, version, records):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,47}', version):
         raise ValueError('Invalid ROM version')
@@ -63,6 +87,7 @@ def build(candidate, kernel, boot, avb, output, version, records):
     profile = MODELS[model]
     layout = layout_for(model)
     packed = json.loads((candidate / 'images.json').read_text())
+    verify_binding(candidate, packed)
     kernels = json.loads((kernel / 'input.json').read_text())
     bootstrap = json.loads((avb / 'input.json').read_text())
     if (source.get('donor_build') != 'S942BXXU4ZZH6'
@@ -72,13 +97,33 @@ def build(candidate, kernel, boot, avb, output, version, records):
         raise ValueError('Expected a sanitised, original-layout candidate with matching model stock firmware')
     if model != 'SM-G973F' and (kernels.get('model') != model or source.get('kernel', {}).get('model') != model or packed.get('model') != model):
         raise ValueError('Kernel, images and candidate must belong to the same model')
-    if (source.get('artisan_control', {}).get('surface') != 'native-settings-fragment'
-            or not source.get('s10_hdmi_audio_compatibility')
+    if (not source.get('s10_hdmi_audio_compatibility')
             or not source.get('s10_native_zygote_compatibility')
             or not source.get('s10_legacy_scheduler_compatibility')
             or not source.get('s10_boot_performance')):
-        raise ValueError('The current native Settings, CE, HDMI and scheduler integrations are required')
-    bundle = source['artisan_control']
+        raise ValueError('The current HDMI, zygote, scheduler and performance integrations are required')
+    bundle = source.get('artisan_control')
+    if model == 'SM-G975F':
+        ce = source.get('s10_ce_storage_compatibility') or {}
+        system = candidate / 'tree/system'
+        qs = source.get('s10_qs_sync_permission') or {}
+        mobile = source.get('s10_qs_mobile_data') or {}
+        qs_apk = 'system_ext/priv-app/SystemUI/SystemUI.apk'
+        if (source.get('yurom_settings_removed') is not True or bundle is not None
+                or not isinstance((source.get('donor_app_restoration') or {}).get('files'), dict)
+                or set(qs.get('files', {})) != {qs_apk}
+                or set(mobile.get('files', {})) != {qs_apk}
+                or mobile['files'] != qs['files']
+                or digest(system / qs_apk) != qs['files'][qs_apk]
+                or ce.get('vold_sha256') != '1856ffbd5dfd3922c0987fced54031e40ebad03bc84c6b0f540995946dbc7009'
+                or digest(system / 'bin/vold') != ce['vold_sha256']
+                or digest(system / 'framework/services.jar') != ce.get('services_sha256')
+                or digest(system / 'priv-app/SecSettings/SecSettings.apk') != source['s10_settings_branding']['settings_sha256']
+                or (system / 'framework/artisan-control-broker.jar').exists()
+                or (system / 'etc/init/artisan-control.rc').exists()):
+            raise ValueError('S10+ requires clean Settings, the CE fix and the checked SystemUI QS patches')
+    elif not bundle or bundle.get('surface') != 'native-settings-fragment':
+        raise ValueError('The model requires the native Settings integration')
     if source.get('ce_vold_sha256') != '1856ffbd5dfd3922c0987fced54031e40ebad03bc84c6b0f540995946dbc7009':
         raise ValueError('The tokenless-CE donor dependency is required')
     if (bootstrap.get('model') != model or bootstrap.get('flags') != 3
@@ -119,9 +164,10 @@ def build(candidate, kernel, boot, avb, output, version, records):
                 'recovery_devices': [profile['device'].removesuffix('lte'), profile['device']], 'donor_build': source['donor_build'],
                 'stock_vendor_build': source['stock_build'], 'clean_install_required': True,
                 'automatic_data_format': False, 'repartition': False, 'images': inventory,
-                'artisan_outputs': bundle['outputs'], 'zip_install_on_device_verified': False,
+                'artisan_outputs': bundle['outputs'] if bundle else None, 'zip_install_on_device_verified': False,
                 'selinux_enforcing_validated': False, 'physical_model_acceptance': 'pending',
                 'adaptive_performance_control': source.get('adaptive_performance_control', {})}
+    verify_binding(candidate, packed)
     temporary = output.with_name(output.name + '.partial')
     if temporary.exists():
         raise ValueError('A previous partial ZIP must be investigated first')
@@ -137,18 +183,15 @@ def build(candidate, kernel, boot, avb, output, version, records):
         archive.writestr('artisan/partitions.tsv', ''.join(partitions))
         archive.writestr('artisan/chunks.tsv', ''.join(chunks))
         archive.writestr('artisan/manifest.json', json.dumps(manifest, indent=2) + '\n')
-        instructions = (ROOT / 'target/beyond1lte/oneui9/installer/INSTALL.md').read_text()
+        instructions = (ROOT / 'scripts/oneui9_installer/INSTALL.md').read_text()
         if model != 'SM-G973F':
             instructions = instructions.replace('G973F', model.removeprefix('SM-')).replace('beyond1lte', profile['device']).replace('beyond1', profile['device'].removesuffix('lte')).replace('HWC1', 'HWC2')
         archive.writestr('INSTALL.md', instructions.encode())
     # Read and hash the entire archive, not merely its central directory/CRC.
     with zipfile.ZipFile(temporary) as archive:
-        for line in chunks:
-            name, offset, size, expected, entry = line.split()
-            with archive.open(entry) as stream:
-                if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
-                    raise RuntimeError('Packed payload checksum mismatch: ' + entry)
-        assert len(archive.namelist()) == len(set(archive.namelist()))
+        verify_packed_images(archive, chunks, inventory)
+        if len(archive.namelist()) != len(set(archive.namelist())):
+            raise RuntimeError('Duplicate entries in packed ZIP')
     os.rename(temporary, output)
     checksum = digest(output)
     output.with_suffix(output.suffix + '.sha256').write_text(checksum + '  ' + output.name + '\n')

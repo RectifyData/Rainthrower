@@ -22,7 +22,7 @@ def digest(path):
 
 def build(checkout, output):
     source = checkout / SOURCE
-    resources = checkout / "target/beyond1lte/oneui9/display"
+    resources = checkout / "scripts/oneui9_runtime/display"
     inputs = {SOURCE: digest(source), **{str(path.relative_to(checkout)): digest(path) for path in sorted(resources.iterdir())}}
     manifest = output / "manifest.json"
     if output.exists():
@@ -62,7 +62,7 @@ def configure(checkout, system, model):
     if model not in metadata["models"]:
         raise ValueError("No reviewed display geometry for this model")
     references = {"framework": system / "framework/framework.jar", "etc": system / "etc/floating_feature.xml",
-                  "init": system / "etc/init/artisan-control.rc"}
+                  "init": system / "etc/init/aconfigd.rc"}
     for name, relative in FILES.items():
         path = system / relative
         if path.exists():

@@ -4,8 +4,11 @@
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 import subprocess
+from s10_image_binding import verify_binding
 
 
 def digest(path):
@@ -13,7 +16,37 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def write_verified_images(installation, stage, shell, record):
+def can_resume_uploaded(state):
+    # A legacy record with no start marker cannot prove that dd never ran.
+    return bool(state and state.get("status") == "failed"
+                and state.get("writes_started") is False
+                and not state.get("writes") and not state.get("data_formatted"))
+
+
+def save_state(records, state):
+    # An acknowledged write-start marker must survive a host crash.  Keep
+    # the old record intact if serialisation or replacement fails.
+    fd, name = tempfile.mkstemp(prefix=".state-", dir=records)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(state, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, records / "state.json")
+        directory = os.open(records, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def write_verified_images(installation, stage, shell, record, begin_write):
+    if installation:
+        begin_write()  # Persist before the first destructive command, not after readback.
     for item in installation:
         name = item["partition"]
         device = item.get("device", "/dev/block/by-name/" + name)
@@ -44,11 +77,12 @@ def main():
     if (not args.adb.is_file() or (args.records.exists() and not args.resume_uploaded)
             or not args.records.parent.is_dir() or args.records.resolve().is_relative_to(checkout)):
         parser.error("Verified ADB, a fresh external records destination and an existing parent are required")
-    if args.resume_uploaded and (not previous or previous.get("status") != "failed" or previous.get("writes") or previous.get("data_formatted")):
+    if args.resume_uploaded and not can_resume_uploaded(previous):
         parser.error("Only a halted attempt with no partition writes or data format can resume its uploads")
     layout = json.loads((checkout / "target/beyond1lte/oneui9/stock-layout.json").read_text())
     candidate = json.loads((args.candidate / "input.json").read_text())
     images = json.loads((args.candidate / "images.json").read_text())
+    verify_binding(args.candidate, images)
     kernel = json.loads((args.kernel / "input.json").read_text())
     backup = json.loads((args.backup / "state.json").read_text())
     evidence = json.loads((args.evidence / "result.json").read_text())
@@ -82,7 +116,7 @@ def main():
         installation.append({"partition": name, "source": path, "size": metadata["size"], "sha256": metadata["sha256"]})
     args.records.mkdir(exist_ok=args.resume_uploaded)
     state = {"status": "preflight", "model": "SM-G973F", "repartition": False, "writes": [],
-             "data_format_requested": args.format_data, "data_formatted": False, "full_boot_tested": False,
+             "data_format_requested": args.format_data, "data_formatted": False, "writes_started": False, "full_boot_tested": False,
              "runtime_hal_registration_tested": False,
              "install_set": [{key: str(value) if isinstance(value, Path) else value for key, value in item.items()} for item in installation]}
     if previous:
@@ -92,7 +126,7 @@ def main():
             json.dump(previous, stream, indent=2)
 
     def save():
-        (args.records / "state.json").write_text(json.dumps(state, indent=2) + "\n")
+        save_state(args.records, state)
 
     def shell(command, timeout=30):
         result = subprocess.run([str(args.adb), "-s", args.serial, "shell", command], stdin=subprocess.DEVNULL,
@@ -156,7 +190,10 @@ def main():
             (args.records / (entry["partition"] + ".write.log")).write_text(output + "\n")
             state["writes"].append(entry)
             save()
-        write_verified_images(installation, stage, shell, record)
+        def begin_write():
+            state["writes_started"] = True
+            save()
+        write_verified_images(installation, stage, shell, record, begin_write)
         if args.format_data:
             for line in shell("losetup -a").splitlines():
                 if "/data/s10-port-runtime-preview-gnu-v3/" in line:

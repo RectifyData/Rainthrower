@@ -16,7 +16,7 @@ export function validate(value) {
       || !Array.isArray(value.crashes) || value.crashes.length > 12
       || !(value.report === null || CATEGORIES.has(value.report))) throw new Error('Invalid event');
   for (const crash of value.crashes) {
-    if (!exact(crash, ['signature', 'component', 'exception', 'frames']) || !/^[0-9a-f]{64}$/.test(crash.signature)
+    if (!exact(crash, ['signature', 'component', 'exception', 'frames']) || typeof crash.signature !== 'string' || !/^[0-9a-f]{64}$/.test(crash.signature)
         || !COMPONENTS.has(crash.component) || typeof crash.exception !== 'string' || !/^[A-Za-z_$][A-Za-z0-9_.$]{0,159}$/.test(crash.exception)
         || !Array.isArray(crash.frames) || crash.frames.length > 3
         || crash.frames.some(frame => typeof frame !== 'string' || !/^[A-Za-z_$][A-Za-z0-9_.$]{0,199}$/.test(frame))) throw new Error('Invalid crash summary');

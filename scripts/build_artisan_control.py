@@ -14,6 +14,8 @@ import subprocess
 import tempfile
 import zipfile
 
+from s10_dex_integrity import assembler_api, validate_dex
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "packages/ArtisanControl"
 HOOK = "Lcom/artisanrom/control/"
@@ -156,7 +158,9 @@ def build(args):
             with zipfile.ZipFile(path) as z:
                 for entry in z.namelist():
                     if not re.fullmatch(r"classes\d*\.dex", entry): continue
-                    owners = set(dex_classes(z.read(entry)))
+                    original_dex = z.read(entry)
+                    version, api = validate_dex(original_dex), assembler_api(original_dex)
+                    owners = set(dex_classes(original_dex))
                     selected = [rule for rule in rules if rule["class"] in owners]
                     extra=[rule for rule in additions if rule["class"] in owners]
                     fragments=[rule for rule in edits if rule["class"] in owners]
@@ -166,6 +170,7 @@ def build(args):
                     cached=cache/(cache_key+".dex")
                     cached_hash=cache/(cache_key+".sha256")
                     if cached.is_file() and cached_hash.is_file() and digest(cached)==cached_hash.read_text().strip():
+                        validate_dex(cached.read_bytes(), version)
                         if set(dex_classes(cached.read_bytes()))!=owners:raise ValueError("Invalid cached class inventory")
                         replacements[entry]=cached
                         patched.extend({"target":label,"class":rule["class"],"method":rule["method"]} for rule in selected+extra+fragments)
@@ -199,8 +204,8 @@ def build(args):
                             updated,n=re.subn(r"^    iget-boolean ([vp]\d+), [vp]\d+, "+re.escape(transform["field"])+r"$",changed,text,flags=re.M)
                             if n: smali.write_text(updated)
                     assembled = folder.with_suffix(".patched.dex")
-                    run(["smali", "a", "-a", "35", "-j", "8", "-o", assembled, folder], log)
-                    if assembled.read_bytes()[:4] != b"dex\n": raise ValueError("Assembler did not produce DEX")
+                    run(["smali", "a", "-a", str(api), "-j", "8", "-o", assembled, folder], log)
+                    validate_dex(assembled.read_bytes(), version)
                     # Method preservation: all original class definitions remain after assembly.
                     if set(dex_classes(assembled.read_bytes())) != owners: raise ValueError("Class inventory changed")
                     cached.write_bytes(assembled.read_bytes());cached_hash.write_text(digest(cached)+"\n")

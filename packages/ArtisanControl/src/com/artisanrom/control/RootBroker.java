@@ -131,14 +131,26 @@ public final class RootBroker {
                 || !homeHash(home).equals(manifest.optString("apk_sha256")) || names.isEmpty()) {
             removeTree(stage); throw new IllegalArgumentException("Yedek bu başlatıcı sürümüyle eşleşmiyor");
         }
-        StructStat owner=Os.stat(dataDirectory.toString());
-        try(java.util.stream.Stream<Path> paths=Files.walk(stage)) {
-            for(Path path:(Iterable<Path>)paths::iterator) {
-                Os.chown(path.toString(),owner.st_uid,owner.st_gid);Os.chmod(path.toString(),Files.isDirectory(path)?0770:0660);
+        Path previous;
+        try {
+            StructStat owner=Os.stat(dataDirectory.toString());
+            try(java.util.stream.Stream<Path> paths=Files.walk(stage)) {
+                for(Path path:(Iterable<Path>)paths::iterator) {
+                    Os.chown(path.toString(),owner.st_uid,owner.st_gid);Os.chmod(path.toString(),Files.isDirectory(path)?0770:0660);
+                }
             }
+            previous=Files.createTempDirectory(dataDirectory,".artisan-previous-");
+        } catch(Exception e) {
+            try{removeTree(stage);}catch(Exception cleanup){e.addSuppressed(cleanup);}
+            throw e;
         }
-        Path previous=Files.createTempDirectory(dataDirectory,".artisan-previous-");
-        execute("am","force-stop",home);
+        try { execute("am","force-stop",home); }
+        catch(Exception e) {
+            try{removeTree(stage);}catch(Exception cleanup){e.addSuppressed(cleanup);}
+            try{removeTree(previous);}catch(Exception cleanup){e.addSuppressed(cleanup);}
+            try{homeStart();}catch(Exception restart){e.addSuppressed(restart);}
+            throw e;
+        }
         Set<String> moved=new HashSet<>(), installed=new HashSet<>();
         try {
             for(String scope:SCOPES) {
@@ -148,10 +160,16 @@ public final class RootBroker {
             }
             execute("restorecon","-RF",dataDirectory.toString());
         } catch(Exception e) {
-            for(String scope:installed)removeTree(dataDirectory.resolve(scope));
-            for(String scope:moved)Files.move(previous.resolve(scope),dataDirectory.resolve(scope));
-            execute("restorecon","-RF",dataDirectory.toString());throw e;
-        } finally { removeTree(stage);homeStart(); }
+            // A failure in one scope must not prevent recovery of the others.
+            // Leave any unrecovered previous data in place for manual recovery.
+            for(String scope:installed)try{removeTree(dataDirectory.resolve(scope));}catch(Exception rollback){e.addSuppressed(rollback);}
+            for(String scope:moved)try{Files.move(previous.resolve(scope),dataDirectory.resolve(scope));}catch(Exception rollback){e.addSuppressed(rollback);}
+            try{execute("restorecon","-RF",dataDirectory.toString());}catch(Exception rollback){e.addSuppressed(rollback);}
+            throw e;
+        } finally { try{removeTree(stage);}finally{homeStart();} }
+        // The old scopes are needed only while the transaction can roll back.
+        // Once the restored launcher has been started, don't retain private data.
+        removeTree(previous);
     }
     private static void removeTree(Path path) throws Exception {
         if(!Files.exists(path))return;

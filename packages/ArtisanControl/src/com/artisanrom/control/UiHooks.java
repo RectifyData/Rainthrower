@@ -125,7 +125,7 @@ public final class UiHooks {
     }
 
     public static void statusBar(View root) {
-        if(!(root instanceof ViewGroup))return;
+        if(!(root instanceof ViewGroup) || bars.containsKey(root))return;
         bars.put(root,null);
         TextView clock=findClock(root);
         TextView network=new TextView(root.getContext());network.setTextSize(9);network.setGravity(Gravity.CENTER_VERTICAL);
@@ -135,13 +135,15 @@ public final class UiHooks {
         else ((ViewGroup)root).addView(network);
         final float originalSize=clock==null?0:clock.getTextSize();
         final android.content.res.ColorStateList originalColour=clock==null?null:clock.getTextColors();
-        root.post(new Runnable(){
+        Runnable updater = new Runnable(){
             long lastRx=TrafficStats.getTotalRxBytes(),lastTx=TrafficStats.getTotalTxBytes(),lastTime=SystemClock.elapsedRealtime();
             boolean formatted=false,coloured=false,sized=false;
             public void run(){
                 if(!root.isAttachedToWindow())return;
+                long delay=1000;
                 try{
                     boolean awake=root.getContext().getSystemService(PowerManager.class).isInteractive();
+                    delay=awake?1000:5000;
                     updateBar(root);
                     if(clock!=null){
                         boolean enabled=Config.enabled();
@@ -163,10 +165,16 @@ public final class UiHooks {
                         double delta=Math.max(1,now-lastTime)/1000.0;
                         network.setText(String.format(Locale.getDefault(),"↑ %.0f  ↓ %.0f KB/s",Math.max(0,tx-lastTx)/1024.0/delta,Math.max(0,rx-lastRx)/1024.0/delta));
                     }
-                    lastRx=rx;lastTx=tx;lastTime=now;root.postDelayed(this,awake?1000:5000);
+                    lastRx=rx;lastTx=tx;lastTime=now;
                 }catch(Throwable t){Config.failure("status bar",t);}
+                finally { if(root.isAttachedToWindow()) root.postDelayed(this, delay); }
             }
+        };
+        root.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            public void onViewAttachedToWindow(View view) { root.removeCallbacks(updater); root.post(updater); }
+            public void onViewDetachedFromWindow(View view) { root.removeCallbacks(updater); }
         });
+        if (root.isAttachedToWindow()) root.post(updater);
     }
     private static void updateBar(View root){
         try{

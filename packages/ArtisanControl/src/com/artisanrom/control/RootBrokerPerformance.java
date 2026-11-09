@@ -20,6 +20,8 @@ public final class RootBrokerPerformance {
     private static final Path DIRECTORY=Paths.get("/data/system/artisan-control");
     private static final Path CONFIG=DIRECTORY.resolve("performance.json"),PENDING=DIRECTORY.resolve("performance-pending");
     private static final Path PROFILE=Paths.get("/vendor/etc/s10-performance-control.json");
+    private static final Path NODE_LOCK=Paths.get("/data/vendor/s10-performance/nodes.lock");
+    // Shared with the boot shell script; init removes stale locks only at boot.
     private static final Path MODEL=DIRECTORY.resolve("performance-model.json");
     private static final Map<String,String> PATHS=new LinkedHashMap<>();
     static{
@@ -38,7 +40,7 @@ public final class RootBrokerPerformance {
     private long previousTotal,previousIdle,healthUntil;
     private Map<String,Integer> initial,lastApplied;
     private final RootBrokerPerformanceLearner learner=new RootBrokerPerformanceLearner();
-    private String expectedBoot="";
+    private String expectedBoot="",activeGeneration="";
     private int savedSamples;
     private boolean bootControlStarted;
     private static String text(String path)throws Exception{return new String(Files.readAllBytes(Paths.get(path)),StandardCharsets.UTF_8).trim();}
@@ -53,12 +55,16 @@ public final class RootBrokerPerformance {
         StringBuilder result=new StringBuilder();for(byte b:digest.digest())result.append(String.format("%02x",b&255));return result.toString();
     }
     private void ready()throws Exception{
-        if(available)return;
+        if(!"applied".equals(property("vendor.s10.performance.state")))throw new IllegalStateException("ROM performans açılış kontrolü bekleniyor");
+        String generation=text("/data/vendor/s10-performance/generation");
+        if(!generation.matches("[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}"))throw new IllegalStateException("Geçersiz performans nesli");
+        if(available && activeGeneration.equals(generation))return;
+        // A new profile run may have changed every node while the broker slept.
+        available=false;ownsNodes=false;lastApplied=null;boost=false;healthUntil=0;bootControlStarted=false;
         if(!Files.isRegularFile(PROFILE))throw new IllegalStateException("Bu ROM’da eşleşen OC kontrol profili yok");
         JSONObject profile=new JSONObject(text(PROFILE.toString()));
         if(profile.optInt("schema")!=1||profile.optInt("maximum_undervolt_percent")!=3||!Build.MODEL.equals(profile.optString("model"))||!profile.optString("boot_sha256").matches("[0-9a-f]{64}"))
             throw new IllegalStateException("OC profili cihazla eşleşmiyor");
-        if(!"applied".equals(property("vendor.s10.performance.state")))throw new IllegalStateException("ROM performans açılış kontrolü bekleniyor");
         if(!hash(Paths.get("/dev/block/platform/13d60000.ufs/by-name/boot")).equals(profile.getString("boot_sha256")))
             throw new IllegalStateException("OC için doğrulanmış kernel gerekli");
         initial=RootBrokerPerformancePolicy.snapshot(nodes);
@@ -77,7 +83,7 @@ public final class RootBrokerPerformance {
                 }
             }
         }catch(Exception ignored){/* Invalid learning data starts a fresh bounded model. */}
-        available=true;
+        activeGeneration=generation;available=true;
     }
     private void writeJson(Path destination,JSONObject document)throws Exception{
         Files.createDirectories(DIRECTORY);Os.chmod(DIRECTORY.toString(),0700);
@@ -134,18 +140,27 @@ public final class RootBrokerPerformance {
     }
     private synchronized void tick(){
         if(blocked)return;
-        try{load();ready();if(!bootControlStarted){if("auto".equals(mode)||"oc".equals(mode))beginHealthWindow();bootControlStarted=true;}apply();error="";}
-        catch(Exception e){
-            error=String.valueOf(e.getMessage());
-            if(available){
-                blocked=true;mode="stock";undervolt=0;boost=false;lastApplied=null;reason="Hata sonrası stok sınırlar";
-                try{RootBrokerPerformancePolicy.apply(nodes,new RootBrokerPerformancePolicy.Decision(false,0,"Kontrol durduruldu").values());save();Files.deleteIfExists(PENDING);}
-                catch(Exception rollback){error+="; geri yükleme: "+rollback.getMessage();}
+        try{
+            if(!"applied".equals(property("vendor.s10.performance.state")))return;
+            try(RootBrokerPerformanceLock lock=RootBrokerPerformanceLock.acquire(NODE_LOCK)){
+                try{
+                    load();ready();if(!bootControlStarted){if("auto".equals(mode)||"oc".equals(mode))beginHealthWindow();bootControlStarted=true;}apply();error="";
+                }catch(Exception e){
+                    error=String.valueOf(e.getMessage());
+                    if(available){
+                        blocked=true;mode="stock";undervolt=0;boost=false;lastApplied=null;reason="Hata sonrası stok sınırlar";
+                        try{RootBrokerPerformancePolicy.apply(nodes,new RootBrokerPerformancePolicy.Decision(false,0,"Kontrol durduruldu").values());save();Files.deleteIfExists(PENDING);}
+                        catch(Exception rollback){error+="; geri yükleme: "+rollback.getMessage();}
+                    }
+                }
             }
-        }
+        }catch(java.nio.file.FileAlreadyExistsException busy){
+            // The boot service or another writer is using the nodes; retry next tick.
+        }catch(Exception e){error=String.valueOf(e.getMessage());}
     }
     public void start(){Thread worker=new Thread(()->{for(;;){tick();try{Thread.sleep(5000);}catch(InterruptedException e){return;}}},"artisan-oc");worker.setDaemon(true);worker.start();}
     public synchronized byte[] configure(byte[] bytes)throws Exception{
+        try(RootBrokerPerformanceLock lock=RootBrokerPerformanceLock.acquire(NODE_LOCK)){
         if(bytes.length>1024)throw new IllegalArgumentException("OC isteği çok büyük");
         JSONObject config=new JSONObject(new String(bytes,StandardCharsets.UTF_8));
         if(config.length()!=2||!(config.get("mode") instanceof String)||!(config.get("undervolt") instanceof Integer))throw new IllegalArgumentException("Geçersiz OC isteği");
@@ -160,6 +175,7 @@ public final class RootBrokerPerformance {
             throw e;
         }
         return status();
+        }
     }
     public synchronized byte[] status()throws Exception{
         JSONObject result=new JSONObject().put("available",available).put("mode",mode).put("undervolt",undervolt).put("reason",reason).put("error",error).put("blocked",blocked)

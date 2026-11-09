@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import tarfile
+import tempfile
 
 PIN = "a97afb2c431802523a89fb875a3faadb7dcaac26"
 CLANG_HASH = "85a113b981c1e4c81fb98afce61b2eb74c425dc51c3116fee08d3a863e611a22"
@@ -79,6 +80,40 @@ def compatible_fbe_fstab(stock_fstab):
     return "".join(lines)
 
 
+def validate_ksunext_source(kernel, record, current_diff):
+    """Verify the manual-hook patch and recover the pre-integration diff hash."""
+    from prepare_s10_ksunext import KSU_PIN, PATCH, KSU_PATCH
+    kernel = kernel.resolve()
+    state = json.loads(record.read_text())
+    link = kernel / "drivers/kernelsu"
+    if (state.get("schema") != 1 or state.get("kernel_commit") != PIN or state.get("ksu_commit") != KSU_PIN
+            or state.get("hooks_patch_sha256") != digest(PATCH) or state.get("ksu_patch_sha256") != digest(KSU_PATCH)
+            or state.get("hook_mode") != "manual"
+            or state.get("susfs_integrated") is not False
+            or state.get("after_diff_sha256") != hashlib.sha256(current_diff).hexdigest() or not link.is_symlink()):
+        raise ValueError("KernelSU integration metadata or patched kernel changed")
+    source = link.resolve()
+    if source.name != "kernel" or not (source / "Kbuild").is_file():
+        raise ValueError("KernelSU source link is invalid")
+    ksu = source.parent
+    if (subprocess.check_output(["git", "-C", str(ksu), "rev-parse", "HEAD"], text=True).strip() != KSU_PIN
+            or hashlib.sha256(subprocess.check_output(["git", "-C", str(ksu), "diff", "--binary", "HEAD", "--"])).hexdigest() != digest(KSU_PATCH)
+            or subprocess.check_output(["git", "-C", str(ksu), "ls-files", "--others", "--exclude-standard"], text=True).strip()):
+        raise ValueError("Pinned KernelSU-Next Legacy source changed")
+    # Use an isolated index to reverse only our patch without modifying the
+    # source tree, then check the independently reviewed performance diff.
+    with tempfile.TemporaryDirectory(prefix="s10-ksu-index-") as temp:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(temp) / "index"))
+        subprocess.run(["git", "read-tree", "HEAD"], cwd=kernel, env=env, check=True)
+        subprocess.run(["git", "add", "-u", "--", "."], cwd=kernel, env=env, check=True)
+        subprocess.run(["git", "apply", "--cached", "--reverse", str(PATCH)], cwd=kernel, env=env, check=True)
+        before = subprocess.check_output(["git", "diff", "--cached", "--binary", "HEAD", "--"], cwd=kernel, env=env)
+    before_hash = hashlib.sha256(before).hexdigest()
+    if before_hash != state.get("before_diff_sha256"):
+        raise ValueError("Kernel pre-integration source diff changed")
+    return state, before_hash
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kernel", type=Path, required=True)
@@ -88,6 +123,7 @@ def main():
     parser.add_argument("--model", choices=MODELS, default="SM-G973F")
     parser.add_argument("--stock", type=Path, help="Verified model stock inputs, required for family builds")
     parser.add_argument("--source-manifest", type=Path, help="Reviewed performance patch and additional source hashes")
+    parser.add_argument("--ksu-integration", type=Path, help="External record from prepare_s10_ksunext.py; SUSFS is not yet integrated")
     parser.add_argument("--stock-fstab", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=8)
@@ -99,19 +135,24 @@ def main():
         parser.error("The pinned kernel source and verified Android Clang archive are required")
     source_diff = subprocess.check_output(["git", "-C", str(args.kernel), "diff", "--binary", "HEAD", "--"])
     untracked = subprocess.check_output(["git", "-C", str(args.kernel), "ls-files", "--others", "--exclude-standard"], text=True).splitlines()
+    ksu = None
+    baseline_diff_hash = hashlib.sha256(source_diff).hexdigest()
+    if args.ksu_integration:
+        ksu, baseline_diff_hash = validate_ksunext_source(args.kernel, args.ksu_integration, source_diff)
+        untracked = [name for name in untracked if name != "drivers/kernelsu"]
     performance = None
     if args.source_manifest:
         performance = json.loads(args.source_manifest.read_text())
         if (performance.get("source_commit") != PIN or performance.get("source_patch_sha256") != PERFORMANCE_PATCH
-                or hashlib.sha256(source_diff).hexdigest() != PERFORMANCE_PATCH):
+                or baseline_diff_hash != PERFORMANCE_PATCH):
             parser.error("The reviewed performance source patch changed")
         required = {"drivers/soc/samsung/cal-if/exynos9820-oc.h", "drivers/soc/samsung/exynos-hiu-budget.h"}
         if not required.issubset(untracked) or set(untracked) - set(performance["new_sources"]):
             parser.error("Unreviewed or missing additional kernel source files")
         if any(digest(args.kernel / name) != performance["new_sources"][name] for name in untracked):
             parser.error("An additional kernel source changed after review")
-    elif untracked:
-        parser.error("Untracked kernel source files must be reviewed before building")
+    elif untracked or baseline_diff_hash != hashlib.sha256(b"").hexdigest():
+        parser.error("Modified or untracked kernel sources require a reviewed source manifest")
     stock = json.loads((args.stock / "input.json").read_text()) if args.stock else None
     if args.model != "SM-G973F" and (not stock or stock.get("model") != args.model
             or stock.get("kind") != "verified-s10-family-hwc2-stock-inputs"):
@@ -145,6 +186,9 @@ def main():
     # The newer-HWC multiplier would scale those a second time after resume.
     subprocess.run(["bash", str(args.kernel / "scripts/config"), "--file", str(obj / ".config"),
                     "--disable", "ONEUI7_WORKAROUND", "--enable", "SECURITY_PERF_EVENTS_RESTRICT"], check=True)
+    if ksu:
+        subprocess.run(["bash", str(args.kernel / "scripts/config"), "--file", str(obj / ".config"),
+                        "--enable", "KSU", "--enable", "KSU_MANUAL_HOOK"], check=True)
     if performance:
         subprocess.run(["bash", str(args.kernel / "scripts/config"), "--file", str(obj / ".config"),
                         "--set-str", "CMDLINE", "exynos9820_cpu_oc=3016000 exynos9820_cluster_oc=1 exynos9820_gpu_oc=806000",
@@ -158,6 +202,8 @@ def main():
                      "CONFIG_CRYPTO_XTS=y", "CONFIG_CRYPTO_CTS=y"):
         if required not in config.splitlines():
             raise RuntimeError(f"Missing mandatory kernel feature: {required}")
+    if ksu and not {"CONFIG_KSU=y", "CONFIG_KSU_MANUAL_HOOK=y"}.issubset(config.splitlines()):
+        raise RuntimeError("KernelSU-Next Legacy and manual hooks must be built in")
     hardware = {"SM-G970F": ("CONFIG_CAMERA_BSS_V00=y", "CONFIG_EXYNOS_DECON_LCD_S6E3FA7=y",
                              "CONFIG_SENSORS_ET5XX=y", "# CONFIG_SENSORS_QBT2000 is not set"),
                 "SM-G975F": ("CONFIG_CAMERA_BSS_V02=y", "CONFIG_CAMERA_CIS_4HA_OBJ=y",
@@ -231,6 +277,9 @@ def main():
                  "cache_metadata_backend": True,
                  "userdata_encryption": USERDATA_ENCRYPTION, "requires_clean_data": True,
                "images": images, "device_boot_tested": False, "ready_for_installation": False}
+    if ksu:
+        result["kernelsu_next"] = {"source_commit": ksu["ksu_commit"], "hook_mode": "manual",
+                                   "susfs_integrated": False, "device_tested": False}
     if performance:
         result["performance_source_patch_sha256"] = PERFORMANCE_PATCH
         result["performance_profile"] = {key: performance[key] for key in

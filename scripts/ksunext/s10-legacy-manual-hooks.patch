@@ -1,0 +1,203 @@
+diff --git a/drivers/Kconfig b/drivers/Kconfig
+index a6c18d0dd8f3..64034441d398 100644
+--- a/drivers/Kconfig
++++ b/drivers/Kconfig
+@@ -1,6 +1,8 @@
+ # SPDX-License-Identifier: GPL-2.0
+ menu "Device Drivers"
+ 
++source "drivers/kernelsu/Kconfig"
++
+ source "drivers/amba/Kconfig"
+ 
+ source "drivers/base/Kconfig"
+diff --git a/drivers/Makefile b/drivers/Makefile
+index 99f8ea2568d4..c2f41d75ce7f 100644
+--- a/drivers/Makefile
++++ b/drivers/Makefile
+@@ -6,6 +6,7 @@
+ # Rewritten to use lists instead of if-statements.
+ #
+ 
++obj-$(CONFIG_KSU)		+= kernelsu/
+ obj-y				+= irqchip/
+ obj-y				+= bus/
+ 
+diff --git a/drivers/input/input.c b/drivers/input/input.c
+index ef1564841ce5..d9befa3bfe43 100644
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -378,12 +378,17 @@ static int input_get_disposition(struct input_dev *dev,
+ }
+ 
+ 
++#ifdef CONFIG_KSU_MANUAL_HOOK
++extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
++#endif
+ static void input_handle_event(struct input_dev *dev,
+ 			       unsigned int type, unsigned int code, int value)
+ {
+ 	int disposition = input_get_disposition(dev, type, code, &value);
+ 
+-
++#ifdef CONFIG_KSU_MANUAL_HOOK
++	ksu_handle_input_handle_event(&type, &code, &value);
++#endif
+ 	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
+ 		add_input_randomness(type, code, value);
+ 
+diff --git a/fs/exec.c b/fs/exec.c
+index 8d5cdf48037c..9cc3493e6d8d 100644
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1900,11 +1900,21 @@ static int __do_execve_file(int fd, struct filename *filename,
+ 	return retval;
+ }
+ 
++#ifdef CONFIG_KSU_MANUAL_HOOK
++extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
++                               void *argv, void *envp, int *flags);
++#endif
++
+ static int do_execveat_common(int fd, struct filename *filename,
+ 			      struct user_arg_ptr argv,
+ 			      struct user_arg_ptr envp,
+ 			      int flags)
+ {
++#ifdef CONFIG_KSU_MANUAL_HOOK
++	/* This shared path covers native and compat execve and execveat once. */
++	if (!IS_ERR_OR_NULL(filename))
++		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
++#endif
+ 	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+ }
+ 
+diff --git a/fs/namespace.c b/fs/namespace.c
+index d8c3c1faac79..ddcf26d34d98 100644
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -2076,7 +2076,11 @@ static int can_umount(const struct path *path, int flags)
+ 		 return -EINVAL;
+ 	 if (!check_mnt(mnt))
+ 		 return -EINVAL;
++#ifdef CONFIG_KDP_NS
++	 if (mnt->mnt->mnt_flags & MNT_LOCKED)
++#else
+ 	 if (mnt->mnt.mnt_flags & MNT_LOCKED)
++#endif
+ 		 return -EINVAL;
+ 	 if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+ 		 return -EPERM;
+diff --git a/fs/open.c b/fs/open.c
+index b084c1453bee..288fcc609364 100644
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -363,6 +363,10 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
+  * We do this by temporarily clearing all FS-related capabilities and
+  * switching the fsuid/fsgid around to the real ones.
+  */
++#ifdef CONFIG_KSU_MANUAL_HOOK
++extern int ksu_handle_faccessat(int *dfd, const char __user **filename,
++                                int *mode, int *flags);
++#endif
+ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+ {
+ 	const struct cred *old_cred;
+@@ -373,7 +377,9 @@ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+ 	int res;
+ 	unsigned int lookup_flags = LOOKUP_FOLLOW;
+ 
+-
++#ifdef CONFIG_KSU_MANUAL_HOOK
++	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
++#endif
+ 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
+ 		return -EINVAL;
+ 
+diff --git a/fs/read_write.c b/fs/read_write.c
+index b9f5c1566739..e4a079f6faa2 100644
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -598,11 +598,18 @@ static inline void file_pos_write(struct file *file, loff_t pos)
+ 		file->f_pos = pos;
+ }
+ 
++#ifdef CONFIG_KSU_MANUAL_HOOK
++extern void ksu_handle_sys_read(unsigned int fd);
++#endif
+ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+ {
+-	struct fd f = fdget_pos(fd);
++	struct fd f;
+ 	ssize_t ret = -EBADF;
+ 
++#ifdef CONFIG_KSU_MANUAL_HOOK
++	ksu_handle_sys_read(fd);
++#endif
++	f = fdget_pos(fd);
+ 	if (f.file) {
+ 		loff_t pos = file_pos_read(f.file);
+ 		ret = vfs_read(f.file, buf, count, &pos);
+diff --git a/fs/stat.c b/fs/stat.c
+index 5b6012e722b7..5a2e1ce4527c 100644
+--- a/fs/stat.c
++++ b/fs/stat.c
+@@ -163,6 +163,10 @@ EXPORT_SYMBOL(vfs_statx_fd);
+  *
+  * 0 will be returned on success, and a -ve error code if unsuccessful.
+  */
++#ifdef CONFIG_KSU_MANUAL_HOOK
++extern int ksu_handle_stat(int *dfd, const char __user **filename, int *flags);
++extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf);
++#endif
+ int vfs_statx(int dfd, const char __user *filename, int flags,
+ 	      struct kstat *stat, u32 request_mask)
+ {
+@@ -170,7 +174,9 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
+ 	int error = -EINVAL;
+ 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
+ 
+-
++#ifdef CONFIG_KSU_MANUAL_HOOK
++	ksu_handle_stat(&dfd, &filename, &flags);
++#endif
+ 	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+ 		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
+ 		return -EINVAL;
+@@ -377,7 +383,10 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
+ 
+ 	if (!error)
+ 		error = cp_new_stat(&stat, statbuf);
+-
++#ifdef CONFIG_KSU_MANUAL_HOOK
++	if (!error)
++		ksu_handle_newfstat_ret(&fd, &statbuf);
++#endif
+ 	return error;
+ }
+ 
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+index c9759265cdfe..e55a13ed47b2 100644
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -284,6 +284,9 @@ static DEFINE_MUTEX(reboot_mutex);
+  */
+ 
+ 
++#ifdef CONFIG_KSU_MANUAL_HOOK
++extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
++#endif
+ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+ 		void __user *, arg)
+ {
+@@ -291,7 +294,9 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+ 	char buffer[256];
+ 	int ret = 0;
+ 
+-
++#ifdef CONFIG_KSU_MANUAL_HOOK
++	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
++#endif
+ 	/* We only trust the superuser with rebooting the system. */
+ 	if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))
+ 		return -EPERM;
