@@ -40,6 +40,7 @@ test('reject unknown personal fields, raw messages, unauthorised devices, oversi
     Object.assign(event(), { report: 'user email@example.test' }), Object.assign(event(), { build: 'private ' + 'x'.repeat(9000) })];
   const message = event(); message.crashes[0].message = 'private content'; invalid.push(message);
   const frame = event(); frame.crashes[0].frames = ['at Foo (/data/user/0/private:42)']; invalid.push(frame);
+  const signatureArray = event(); signatureArray.crashes[0].signature = ['a'.repeat(64)]; invalid.push(signatureArray);
   for (const value of invalid) assert.equal((await send(value)).status, 400);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM installations').get().n, 0); db.close();
 });

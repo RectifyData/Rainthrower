@@ -1,0 +1,3 @@
+# Unified-diff context lines intentionally start with a space, including blank
+# and tab-indented context; do not treat the patch syntax as source whitespace.
+*.patch -whitespace

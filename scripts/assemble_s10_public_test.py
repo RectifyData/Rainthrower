@@ -3,7 +3,7 @@
 """Assemble immutable per-model public-test payloads, launchers and honest acceptance metadata."""
 import argparse
 import json
-import os
+import shutil
 from pathlib import Path
 import re
 
@@ -17,30 +17,42 @@ def assemble(version, output, records, acceptance):
     tag = version.removesuffix("-test")
     channel = "beta" if version.endswith("-beta") else "public-test"
     device = json.loads(acceptance.read_text())
-    if device.get("version") != version or device.get("model") != "SM-G973F":
-        raise ValueError("Matching versioned physical S10 acceptance is required")
-    profiles = json.loads((ROOT / "target/beyond1lte/oneui9/display/profiles.json").read_text())["models"]
+    required_checks = ("boot", "camera", "fingerprint", "display", "radio", "galaxy_store")
+    if (device.get("version") != version or device.get("model") != "SM-G973F"
+            or device.get("device_tested") is not True or not isinstance(device.get("checks"), dict)
+            or any(device["checks"].get(name) is not True for name in required_checks)):
+        raise ValueError("Matching versioned physical S10 acceptance with all required checks is required")
+    profiles = json.loads((ROOT / "scripts/oneui9_runtime/display/profiles.json").read_text())["models"]
     rows = []
     for model in ("SM-G970F", "SM-G973F", "SM-G975F"):
         model_records = records / model / tag
         package = json.loads((model_records / "package.json").read_text())
         bootstrap = json.loads((model_records / "bootstrap-package.json").read_text())
-        assert package["model"] == bootstrap["model"] == model and package["version"] == bootstrap["version"] == version
-        assert package["packed_image_chunks_verified"] == 11 and package["clean_install_required"] and not package["repartition"]
-        assert bootstrap["payload_sha256"] == package["zip_sha256"] and bootstrap["legacy_ufs_alias_supported"]
-        assert bootstrap["recovery_shell"] == "busybox-sh" and bootstrap["original_installer_checks_preserved"]
+        if package["model"] != model or bootstrap["model"] != model or package["version"] != version or bootstrap["version"] != version:
+            raise ValueError("Package and launcher model/version do not match")
+        if model == "SM-G973F" and (device.get("payload_sha256") != package.get("zip_sha256")
+                or device.get("launcher_sha256") != bootstrap.get("launcher_sha256")):
+            raise ValueError("Physical acceptance must identify the exact payload and installer")
+        chunks = package["packed_image_chunks_verified"]
+        if (type(chunks) is not int or chunks < 6 or package["clean_install_required"] is not True
+                or package["repartition"] is not False):
+            raise ValueError("Image verification or clean-install metadata is invalid")
+        if (bootstrap["payload_sha256"] != package["zip_sha256"] or bootstrap["legacy_ufs_alias_supported"] is not True
+                or bootstrap["recovery_shell"] != "busybox-sh" or bootstrap["original_installer_checks_preserved"] is not True):
+            raise ValueError("Launcher verification metadata is invalid")
         files = []
         for name, size, sha in ((package["zip_file"], package["zip_bytes"], package["zip_sha256"]),
                                 (bootstrap["launcher_file"], bootstrap["launcher_bytes"], bootstrap["launcher_sha256"])):
             source = ROOT / "out" / name
-            assert source.is_file() and source.stat().st_size == size
-            assert source.with_suffix(source.suffix + ".sha256").read_text().split()[0] == sha
-            assert digest(source) == sha
+            if (not source.is_file() or source.stat().st_size != size
+                    or source.with_suffix(source.suffix + ".sha256").read_text().split()[0] != sha
+                    or digest(source) != sha):
+                raise ValueError("Release payload size or checksum mismatch: " + name)
             files.append({"name": name, "bytes": size, "sha256": sha})
         rows.append({"model": model, "version": version, "rom": package["rom"], "files": files, "display_profile": profiles[model],
                      "host_image_and_chunk_gates": "passed", "physical_acceptance": device if model == "SM-G973F" else {
                          "model": model, "device_tested": False, "status": "pending physical boot/camera/fingerprint/panel/radio testing"}})
-    text = (ROOT / "target/beyond1lte/oneui9/installer/RELEASE_TR.md").read_text().replace("{{VERSION}}", version)
+    text = (ROOT / "scripts/oneui9_installer/RELEASE_TR.md").read_text().replace("{{VERSION}}", version)
     output.mkdir()
     checksums = []
     for row in rows:
@@ -49,8 +61,9 @@ def assemble(version, output, records, acceptance):
         for item in row["files"]:
             source = ROOT / "out" / item["name"]
             target = folder / item["name"]
-            os.link(source, target)
-            assert source.stat().st_ino == target.stat().st_ino and source.stat().st_dev == target.stat().st_dev
+            shutil.copyfile(source, target)
+            if target.stat().st_size != item["bytes"] or digest(target) != item["sha256"]:
+                raise RuntimeError("Copied release payload failed verification")
             checksum = item["sha256"] + "  " + item["name"] + "\n"
             target.with_suffix(target.suffix + ".sha256").write_text(checksum)
             checksums.append(item["sha256"] + "  " + row["model"] + "/" + item["name"])

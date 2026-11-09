@@ -15,6 +15,7 @@ import zipfile
 
 from build_artisan_control import dex_classes, retain_oem_certificate
 from s10_models import ROOT, digest
+from s10_dex_integrity import assembler_api, validate_dex
 
 INPUT_SHA = "6eb64791b4469d3ad490671dc54f14279991e27f62fa0db7088a3bb52b6dac01"
 OWNER = "Lcom/samsung/android/moneta/app/MonetaInitializationProvider;"
@@ -92,12 +93,15 @@ def build(apk, output, records, tools):
                 raise ValueError("Both PDE startup owners must occur exactly once")
             changed_dex, untouched_classes = {}, 0
             for entry, owners in dexes.items():
+                original_dex = original.read(entry)
+                version, api = validate_dex(original_dex), assembler_api(original_dex)
                 workspace = temp / entry
                 workspace.mkdir()
                 folder, canonical = workspace / "smali", workspace / "canonical"
                 subprocess.run(["baksmali", "d", "--debug-info", "false", "-l", "-j", "8", "-o", str(folder), str(apk) + "/" + entry], stdout=log, stderr=subprocess.STDOUT, check=True)
                 canonical_dex = workspace / "canonical.dex"
-                subprocess.run(["smali", "a", "-a", "35", "-j", "8", "-o", str(canonical_dex), str(folder)], stdout=log, stderr=subprocess.STDOUT, check=True)
+                subprocess.run(["smali", "a", "-a", str(api), "-j", "8", "-o", str(canonical_dex), str(folder)], stdout=log, stderr=subprocess.STDOUT, check=True)
+                validate_dex(canonical_dex.read_bytes(), version)
                 subprocess.run(["baksmali", "d", "--debug-info", "false", "-l", "-j", "8", "-o", str(canonical), str(canonical_dex)], stdout=log, stderr=subprocess.STDOUT, check=True)
                 original_classes = {str(p.relative_to(canonical)): p.read_bytes() for p in canonical.rglob("*.smali")}
                 changed_paths = {owner[1:-1] + ".smali" for owner in owners}
@@ -105,8 +109,9 @@ def build(apk, output, records, tools):
                     target = folder / (owner[1:-1] + ".smali")
                     target.write_text(patches[owner](target.read_text()))
                 dex = workspace / "classes.dex"
-                subprocess.run(["smali", "a", "-a", "35", "-j", "8", "-o", str(dex), str(folder)], stdout=log, stderr=subprocess.STDOUT, check=True)
-                if set(dex_classes(dex.read_bytes())) != set(dex_classes(original.read(entry))):
+                subprocess.run(["smali", "a", "-a", str(api), "-j", "8", "-o", str(dex), str(folder)], stdout=log, stderr=subprocess.STDOUT, check=True)
+                validate_dex(dex.read_bytes(), version)
+                if set(dex_classes(dex.read_bytes())) != set(dex_classes(original_dex)):
                     raise ValueError("PDE class inventory changed")
                 rebuilt = workspace / "verify"
                 subprocess.run(["baksmali", "d", "--debug-info", "false", "-l", "-j", "8", "-o", str(rebuilt), str(dex)], stdout=log, stderr=subprocess.STDOUT, check=True)

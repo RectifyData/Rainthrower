@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PAYLOAD = ROOT / "target/beyond1lte/oneui9/performance"
+PAYLOAD = ROOT / "scripts/oneui9_runtime/performance"
 FILES = {
     "etc/init/02-s10-performance.rc": "02-s10-performance.rc",
     "etc/s10-performance-profile.sh": "s10-performance-profile.sh",

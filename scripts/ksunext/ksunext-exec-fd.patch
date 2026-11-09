@@ -1,0 +1,240 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+index 6eb4b24..20213af 100644
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -212,101 +212,10 @@ ifneq ($(HAVE_KSU_HOOK),0)
+ $(error -- KernelSU-Next: No hooks were defined, please integrate manual hooks in your kernel!)
+ endif
+ 
+-# some backports
+-ifneq ($(shell grep -Eq "^static int can_umount" $(srctree)/fs/namespace.c; echo $$?),0)
+-$(info -- KSU_NEXT: adding function 'static int can_umount(const struct path *path, int flags);' to $(srctree)/fs/namespace.c)
+-CAN_UMOUNT = static int can_umount(const struct path *path, int flags)\n\
+-{\n\t\
+-        struct mount *mnt = real_mount(path->mnt);\n\t\
+-        if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\t\
+-                return -EINVAL;\n\t\
+-        if (!may_mount())\n\t\t\
+-                return -EPERM;\n\t\
+-        if (path->dentry != path->mnt->mnt_root)\n\t\t\
+-                return -EINVAL;\n\t\
+-        if (!check_mnt(mnt))\n\t\t\
+-                return -EINVAL;\n\t\
+-        if (mnt->mnt.mnt_flags & MNT_LOCKED)\n\t\t\
+-                return -EINVAL;\n\t\
+-        if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\t\
+-                return -EPERM;\n\t\
+-        return 0;\n\
+-}\n
+-$(shell sed -i '/^static bool is_mnt_ns_file/i $(CAN_UMOUNT)' $(srctree)/fs/namespace.c;)
+-endif
+-
+-ifneq ($(shell grep -Eq "^int path_umount" $(srctree)/fs/namespace.c; echo $$?),0)
+-$(info -- KSU_NEXT: adding function 'int path_umount(struct path *path, int flags);' to $(srctree)/fs/namespace.c)
+-PATH_UMOUNT = int path_umount(struct path *path, int flags)\n\
+-{\n\t\
+-        struct mount *mnt = real_mount(path->mnt);\n\t\
+-        int ret;\n\t\
+-        ret = can_umount(path, flags);\n\t\
+-        if (!ret)\n\t\t\
+-                ret = do_umount(mnt, flags);\n\t\
+-        dput(path->dentry);\n\t\
+-        mntput_no_expire(mnt);\n\t\
+-        return ret;\n\
+-}\n
+-$(shell sed -i '/^static bool is_mnt_ns_file/i $(PATH_UMOUNT)' $(srctree)/fs/namespace.c;)
+-endif
+-
+-ifneq ($(shell grep -Eq "^int path_umount" $(srctree)/fs/internal.h; echo $$?),0)
+-$(shell sed -i '/^extern void __init mnt_init/a int path_umount(struct path *path, int flags);' $(srctree)/fs/internal.h;)
+-$(info -- KSU_NEXT: adding 'int path_umount(struct path *path, int flags);' to $(srctree)/fs/internal.h)
+-endif
+-
+-ifneq ($(shell grep -q "atomic_t filter_count;" $(srctree)/include/linux/seccomp.h; echo $$?),0)
+-$(info -- KSU_NEXT: patching struct seccomp for filter_count)
+-$(shell sed -i '/int mode;/a\	atomic_t filter_count;' $(srctree)/include/linux/seccomp.h)
+-$(shell sed -i '/#include <linux\/thread_info.h>/a\#include <linux/atomic.h>' $(srctree)/include/linux/seccomp.h)
+-endif
+-
+-# security/selinux backports
+-ifneq ($(shell grep -q "selinux_inode(inode)" $(srctree)/security/selinux/hooks.c; echo $$?),0)
+-$(info -- KSU_NEXT: patching selinux/hooks.c for selinux_inode)
+-$(shell sed -i 's/struct inode_security_struct \*isec = inode->i_security/struct inode_security_struct *isec = selinux_inode(inode)/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/return inode->i_security/return selinux_inode(inode)/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/return inode->i_security/return selinux_inode(inode)/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/\bisec = inode->i_security;/isec = selinux_inode(inode);/' $(srctree)/security/selinux/hooks.c)
+-endif
+-
+-ifneq ($(shell grep -Eq 'selinux_cred\(.*\)' $(srctree)/security/selinux/hooks.c; echo $$?),0)
+-$(info -- KSU_NEXT: patching selinux/hooks.c for selinux_cred)
+-$(shell sed -i 's/tsec = cred->security;/tsec = selinux_cred(cred);/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/const struct task_security_struct \*tsec = cred->security;/const struct task_security_struct *tsec = selinux_cred(cred);/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/const struct task_security_struct \*tsec = current_security();/const struct task_security_struct *tsec = selinux_cred(current_cred());/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/old_tsec = current_security();/old_tsec = selinux_cred(current_cred());/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/new_tsec = bprm->cred->security;/new_tsec = selinux_cred(bprm->cred);/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/tsec = new->security;/tsec = selinux_cred(new);/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/tsec = new_creds->security;/tsec = selinux_cred(new_creds);/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/old_tsec = old->security;/old_tsec = selinux_cred(old);/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/const struct task_security_struct \*old_tsec = old->security;/const struct task_security_struct *old_tsec = selinux_cred(old);/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/struct task_security_struct \*tsec = new->security;/struct task_security_struct *tsec = selinux_cred(new);/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/__tsec = current_security();/__tsec = selinux_cred(current_cred());/' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/__tsec = __task_cred(p)->security;/__tsec = selinux_cred(__task_cred(p));/' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/current_security()/selinux_cred(current_cred())/g' $(srctree)/security/selinux/hooks.c)
+-$(shell sed -i 's/old->security/selinux_cred(old)/g' $(srctree)/security/selinux/hooks.c)
+-endif
+-
+-ifneq ($(shell grep -q "selinux_inode(inode)" $(srctree)/security/selinux/selinuxfs.c; echo $$?),0)
+-$(info -- KSU_NEXT: patching selinux/selinuxfs.c for selinux_inode)
+-$(shell sed -i 's/(struct inode_security_struct \*)inode->i_security/selinux_inode(inode)/g' $(srctree)/security/selinux/selinuxfs.c)
+-endif
+-
+-ifneq ($(shell grep -q "selinux_cred" $(srctree)/security/selinux/xfrm.c; echo $$?),0)
+-$(info -- KSU_NEXT: patching selinux/xfrm.c for selinux_cred)
+-$(shell sed -i 's/const struct task_security_struct \*tsec = current_security();/const struct task_security_struct *tsec = selinux_cred(current_cred());/g' $(srctree)/security/selinux/xfrm.c)
+-endif
+-
+-ifneq ($(shell grep -q "selinux_inode" $(srctree)/security/selinux/include/objsec.h; echo $$?),0)
+-$(info -- KSU_NEXT: patching selinux/include/objsec.h for selinux_inode)
+-$(shell sed -i '/#endif \/\* _SELINUX_OBJSEC_H_ \*\//i\static inline struct inode_security_struct *selinux_inode(\n\t\t\t\t\t\tconst struct inode *inode)\n{\n\treturn inode->i_security;\n}\n' $(srctree)/security/selinux/include/objsec.h)
+-endif
+-
+-ifneq ($(shell grep -q "task_security_struct\s\+\*selinux_cred" $(srctree)/security/selinux/include/objsec.h; echo $$?),0)
+-$(info -- KSU_NEXT: patching selinux/include/objsec.h for selinux_cred)
+-$(shell sed -i '/#endif \/\* _SELINUX_OBJSEC_H_ \*\//i\static inline struct task_security_struct *selinux_cred(const struct cred *cred)\n{\n\treturn cred->security;\n}\n' $(srctree)/security/selinux/include/objsec.h)
++# This integration uses a pinned, reviewed kernel tree. Never rewrite kernel
++# sources during make; required backports must be present before validation.
++ifeq ($(shell grep -Eq "^int path_umount" $(srctree)/fs/namespace.c && grep -Eq "^int path_umount" $(srctree)/fs/internal.h && grep -q "atomic_t filter_count;" $(srctree)/include/linux/seccomp.h && grep -q "selinux_inode" $(srctree)/security/selinux/include/objsec.h && grep -q "selinux_cred" $(srctree)/security/selinux/include/objsec.h && echo yes),)
++$(error -- KernelSU-Next: required pinned kernel backports are missing)
+ endif
+ 
+ # SELinux drivers check
+diff --git a/kernel/core/init.c b/kernel/core/init.c
+index e6562de..d0ee439 100644
+--- a/kernel/core/init.c
++++ b/kernel/core/init.c
+@@ -1,4 +1,5 @@
+ #include <linux/export.h>
++#include <linux/fcntl.h>
+ #include <linux/fs.h>
+ #include <linux/kobject.h>
+ #include <linux/module.h>
+@@ -42,6 +43,10 @@ int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+ 	ksu_handle_execveat_ksud(fd, filename_ptr,
+ 				 (struct user_arg_ptr *)argv,
+ 				 (struct user_arg_ptr *)envp, flags);
++	/* Match the syscall-hook sucompat contract.  In particular, never
++	 * change credentials for an invalid or unsupported execveat request. */
++	if (!fd || !flags || *fd != AT_FDCWD || *flags != 0)
++		return 0;
+ 	return ksu_handle_execveat_sucompat(fd, filename_ptr, argv, envp,
+ 					    flags);
+ }
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index f6bd4da..01d8484 100644
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -240,7 +240,8 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+ 	const char su[] = SU_PATH;
+ 	static const char ksud_path[] = KSUD_PATH;
+ 	struct ksu_sulog_pending_event *pending_root = NULL;
+-	const char *const *sucompat_argv = (const char *const *)__never_use_argv;
++	struct file *ksud;
++	int ret;
+ 
+ 	if (unlikely(!filename_ptr))
+ 		return 0;
+@@ -260,11 +261,25 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+ 
+ 	pr_info("do_execveat_common su found\n");
+ 
+-	pending_root = ksu_sulog_capture_root_execve_kern(filename->name, sucompat_argv, GFP_KERNEL);
++	/* The manual-hook argument is a struct user_arg_ptr holding user pointers,
++	 * not a kernel argv array.  Do not dereference it as kernel memory. */
++	pending_root = ksu_sulog_capture_root_execve_kern(filename->name, NULL, GFP_KERNEL);
+ 
+-	memcpy((void *)filename->name, ksud_path, sizeof(ksud_path));
++	ret = escape_with_root_profile();
++	if (ret) {
++		ksu_sulog_emit_pending(pending_root, ret, GFP_KERNEL);
++		return 0;
++	}
+ 
+-	escape_with_root_profile();
++	/* Mirror the syscall hook: permit bootstrap through sh before ksud
++	 * has been installed, instead of executing a nonexistent path. */
++	ksud = ksu_filp_open_compat(KSUD_PATH, O_RDONLY, 0);
++	if (IS_ERR(ksud)) {
++		memcpy((void *)filename->name, SH_PATH, sizeof(SH_PATH));
++	} else {
++		filp_close(ksud, NULL);
++		memcpy((void *)filename->name, ksud_path, sizeof(ksud_path));
++	}
+ 	ksu_sulog_emit_pending(pending_root, 0, GFP_KERNEL);
+ 
+ 	return 0;
+diff --git a/kernel/runtime/ksud_integration.c b/kernel/runtime/ksud_integration.c
+index f3295f4..e138cf8 100644
+--- a/kernel/runtime/ksud_integration.c
++++ b/kernel/runtime/ksud_integration.c
+@@ -583,15 +583,11 @@ static bool is_init_rc(struct file *fp)
+ static void ksu_apply_init_rc_proxy(struct file *file)
+ {
+     // we only process the first read
+-    // READ_ONCE/WRITE_ONCE: this runs from the read(2) path and can be
+-    // entered concurrently on two descriptors of init.rc.
+-    static bool rc_hooked = false;
+-    if (READ_ONCE(rc_hooked)) {
+-        // we don't need these kprobe, unregister it!
+-        stop_init_rc_hook();
++    /* Claim the single global proxy atomically. READ_ONCE/WRITE_ONCE do
++     * not prevent two readers from both replacing its original operations. */
++    static atomic_t rc_hooked = ATOMIC_INIT(0);
++    if (atomic_cmpxchg(&rc_hooked, 0, 1))
+         return;
+-    }
+-    WRITE_ONCE(rc_hooked, true);
+ 
+     // now we can sure that the init process is reading
+     // `/system/etc/init/init.rc`
+@@ -619,6 +615,7 @@ static void ksu_apply_init_rc_proxy(struct file *file)
+     }
+     // replace the file_operations
+     file->f_op = &fops_proxy;
++    stop_init_rc_hook();
+ }
+ 
+ void ksu_handle_sys_read(unsigned int fd)
+@@ -711,6 +708,7 @@ static int ksu_execve_syscall_common(struct pt_regs *real_regs,
+ 	struct filename filename_in, *filename_p;
+ 	char path[32];
+ 	long ret;
++	int fd = AT_FDCWD;
+ 	unsigned long addr;
+ 	const char __user *fn;
+ 
+@@ -735,7 +733,7 @@ static int ksu_execve_syscall_common(struct pt_regs *real_regs,
+ 	filename_in.name = path;
+ 
+ 	filename_p = &filename_in;
+-	return ksu_handle_execveat_ksud(AT_FDCWD, &filename_p, &argv, NULL,
++	return ksu_handle_execveat_ksud(&fd, &filename_p, &argv, NULL,
+ 					NULL);
+ }
+ 
+@@ -900,6 +898,7 @@ static int ksu_execve_ksud_common(const char __user *filename_user,
+ 	struct filename filename_in, *filename_p;
+ 	char path[32];
+ 	long len;
++	int fd = AT_FDCWD;
+ 
+ 	// return early if disabled.
+ 	if (!ksu_execveat_hook) {
+@@ -919,7 +918,7 @@ static int ksu_execve_ksud_common(const char __user *filename_user,
+ 	filename_in.name = path;
+ 	filename_p = &filename_in;
+ 
+-	return ksu_handle_execveat_ksud(AT_FDCWD, &filename_p, argv, NULL,
++	return ksu_handle_execveat_ksud(&fd, &filename_p, argv, NULL,
+ 					NULL);
+ }
+ 

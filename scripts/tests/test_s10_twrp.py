@@ -26,7 +26,7 @@ def main(recovery=None, model='SM-G973F'):
     if recovery:
         recovery = recovery.resolve()
         runner = ['qemu-aarch64', '-L', str(recovery), str(recovery / 'sbin/busybox'), 'sh']
-    subprocess.run(runner + ['-n', str(ROOT / 'target/beyond1lte/oneui9/installer/update-binary')], check=True)
+    subprocess.run(runner + ['-n', str(ROOT / 'scripts/oneui9_installer/update-binary')], check=True)
     layout = layout_for(model)
     loops = []
     with tempfile.TemporaryDirectory(prefix='s10-twrp-test-') as temporary:
@@ -39,7 +39,10 @@ def main(recovery=None, model='SM-G973F'):
             for index, name in enumerate(ORDER):
                 image = root / (name + '.block')
                 with image.open('wb') as stream:
-                    stream.truncate(layout['partitions'][name]['bytes'])
+                    capacity = layout['partitions'][name]['bytes']
+                    if model == 'SM-G975F' and name in ('system', 'vendor'):
+                        capacity = (10240 if name == 'system' else 5600) * 1024 * 1024
+                    stream.truncate(capacity)
                     stream.seek(0)
                     prefixes[name] = bytes([90 + index]) * 4096
                     stream.write(prefixes[name])
@@ -60,7 +63,7 @@ esac
 ''')
             getprop.chmod(0o755)
             if recovery:
-                for tool in ('unzip', 'sha256sum', 'dd', 'head', 'readlink', 'awk', 'mktemp', 'sync', 'cat', 'rm'):
+                for tool in ('unzip', 'sha256sum', 'dd', 'head', 'readlink', 'awk', 'mktemp', 'sync', 'cat', 'rm', 'wc'):
                     wrapper = bin_path / tool
                     wrapper.write_text(f'#!/bin/sh\nexec qemu-aarch64 -L "{recovery}" "{recovery}/sbin/busybox" {tool} "$@"\n')
                     wrapper.chmod(0o755)
@@ -81,10 +84,13 @@ esac
                         sectors = layout['partitions'][name]['bytes'] // 512
                         if case == 'wrong-capacity' and name == 'boot':
                             sectors += 1
+                        if case == 'forged-smaller-system-capacity' and name == 'system':
+                            sectors -= 1
                         entry = f'images/{part}/0000.part'
                         payload = payloads[name]
-                        partitions.append(f'{part}\t{len(payload)}\t{sectors}\n')
-                        chunks.append(f'{part}\t0\t{len(payload)}\t{hashlib.sha256(payload).hexdigest()}\t{entry}\n')
+                        size = len(payload) + (512 if case == 'wrong-last-chunk-length' and name == 'boot' else 0)
+                        partitions.append(f'{part}\t{size}\t{sectors}\n')
+                        chunks.append(f'{part}\t0\t{size}\t{hashlib.sha256(payload).hexdigest()}\t{entry}\n')
                         if case == 'missing-last-chunk' and name == 'boot':
                             continue
                         if case == 'corrupt-last-chunk' and name == 'boot':
@@ -96,7 +102,10 @@ esac
 
             checks = []
             cases = ('wrong-device', 'wrong-bootloader', 'old-bootloader', 'dirty-data', 'wrong-capacity', 'mounted-target',
-                     'forbidden-destination', 'corrupt-last-chunk', 'missing-last-chunk', 'valid')
+                     'forbidden-destination', 'forged-smaller-system-capacity', 'wrong-last-chunk-length', 'corrupt-last-chunk', 'missing-last-chunk')
+            if model == 'SM-G975F':
+                cases += ('undersized-system',)
+            cases += ('valid',)
             for case in cases:
                 environment = dict(os.environ, PATH=str(bin_path) + ':' + os.environ['PATH'])
                 environment['FIXTURE_DEVICE'] = MODELS[model]['device']
@@ -112,6 +121,10 @@ esac
                     (data / 'system/preserved').write_text('user data must survive rejection')
                 if case == 'mounted-target':
                     mounts.write_text(f'/dev/fixture-userdata {data} ext4 rw 0 0\n{loops[2]} /vendor ext4 ro 0 0\n')
+                if case == 'undersized-system':
+                    with files['system'].open('r+b') as stream:
+                        stream.truncate(layout['partitions']['system']['bytes'] - 512)
+                    subprocess.run(['losetup', '-c', loops[ORDER.index('system')]], check=True)
                 result = subprocess.run(runner + [str(script), '3', '1', str(package(case))], env=environment,
                                         capture_output=True, text=True, timeout=90)
                 if case == 'valid':
@@ -131,6 +144,10 @@ esac
                     shutil.rmtree(data / 'system')
                 if case == 'mounted-target':
                     mounts.write_text(f'/dev/fixture-userdata {data} ext4 rw 0 0\n')
+                if case == 'undersized-system':
+                    with files['system'].open('r+b') as stream:
+                        stream.truncate(10240 * 1024 * 1024)
+                    subprocess.run(['losetup', '-c', loops[ORDER.index('system')]], check=True)
             print('PASS: ' + ', '.join(checks) + '; rejected cases wrote no blocks; clean installation readback matched')
         finally:
             for loop in reversed(loops):

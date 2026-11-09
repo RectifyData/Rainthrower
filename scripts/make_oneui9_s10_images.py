@@ -10,6 +10,8 @@ import re
 import subprocess
 import tempfile
 from s10_models import MODELS, layout_for
+from s10_image_binding import tree_digest, compare_image_tree
+from s10_apk_signatures import verify_apks, apk_inventory
 
 
 def digest(path):
@@ -17,10 +19,35 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def pack_system_image(tree, image, capacity, log_path):
+    """Measure complete images; retry stronger compatible LZ4 before failing.
+
+    Both encoders produce the LZ4 format supported by the legacy kernel. Never
+    prune files: individual APK sizes do not predict a whole EROFS image size.
+    """
+    attempts = []
+    with log_path.open("xb") as log:
+        for codec in ("lz4", "lz4hc,9"):
+            try:
+                subprocess.run(["mkfs.erofs", "-z", codec, "-C", "4096", "-E", "legacy-compress", "-b", "4096",
+                                str(image), str(tree)], stdout=log, stderr=subprocess.STDOUT, check=True)
+                size = image.stat().st_size
+                attempts.append({"compression": codec, "bytes": size})
+                if size <= capacity:
+                    return attempts
+            except Exception:
+                image.unlink(missing_ok=True)
+                raise
+            image.unlink()
+    measured = ", ".join(f"{entry['compression']}: {entry['bytes']} bytes" for entry in attempts)
+    raise RuntimeError(f"Complete system does not fit the {capacity}-byte partition ({measured}); no files were removed")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--records", type=Path, required=True)
+    parser.add_argument("--apksigner", type=Path, help="Android apksigner; defaults to the local SDK build tools")
     parser.add_argument("--reuse-vendor-sha256", help="Reuse an exact existing vendor image while rebuilding and verifying system")
     args = parser.parse_args()
     checkout = Path(__file__).resolve().parent.parent
@@ -29,11 +56,20 @@ def main():
     manifest = json.loads((args.candidate / "input.json").read_text())
     if manifest.get("kind") != "experimental-oneui9-s10-merged-system-with-hwc1-vendor" or manifest.get("model") not in MODELS:
         parser.error("The original-layout experimental S10 candidate is required")
+    input_sha256 = digest(args.candidate / "input.json")
     model = manifest["model"]
     if manifest.get("stock_build") != MODELS[model]["build"] or (model != "SM-G973F" and manifest.get("kernel", {}).get("model") != model):
         parser.error("The candidate must use its model's registered stock vendor and kernel")
     if any((args.candidate / name).exists() for name in ("system.img", "images.json")) or ((args.candidate / "vendor.img").exists() and not args.reuse_vendor_sha256):
         parser.error("Completed or incomplete candidate images must not be overwritten")
+    for integration in ("donor_app_restoration", "s10_qs_sync_permission", "s10_qs_mobile_data"):
+        restoration = manifest.get(integration)
+        if restoration is None:
+            continue
+        for relative, expected in restoration["files"].items():
+            path = Path(relative)
+            if path.is_absolute() or ".." in path.parts or digest(args.candidate / "tree/system" / path) != expected:
+                raise RuntimeError("Restored donor app changed before packing: " + relative)
     layout = layout_for(model)
     system_image = args.candidate / "system.img"
     vendor_image = args.candidate / "vendor.img"
@@ -41,11 +77,20 @@ def main():
             or not vendor_image.is_file() or vendor_image.stat().st_size != layout["partitions"]["vendor"]["bytes"]
             or digest(vendor_image) != args.reuse_vendor_sha256):
         parser.error("The existing model vendor image must match its complete verified size and SHA256")
-    with (args.records / "system-image.log").open("xb") as stream:
-        subprocess.run(["mkfs.erofs", "-z", "lz4", "-C", "4096", "-E", "legacy-compress", "-b", "4096",
-                        str(system_image), str(args.candidate / "tree")], stdout=stream, stderr=subprocess.STDOUT, check=True)
-    if system_image.stat().st_size > layout["partitions"]["system"]["bytes"]:
-        raise RuntimeError("System image exceeds the measured stock partition")
+    apksigner = args.apksigner or checkout / "out/host-tools/android-sdk-36/build-tools/android-16/apksigner"
+    verified_apks = {
+        "system": verify_apks(args.candidate / "tree", apksigner, args.records / "system-apk-signatures.log"),
+        "vendor": verify_apks(args.candidate / "vendor", apksigner, args.records / "vendor-apk-signatures.log", allow_empty=True),
+    }
+    # Capture the complete inputs before packing, then compare them with the
+    # mounted images and recheck after packing. This covers untouched files too.
+    tree_sha256 = {"system": tree_digest(args.candidate / "tree"),
+                   "vendor": tree_digest(args.candidate / "vendor")}
+    if (apk_inventory(args.candidate / "tree") != verified_apks["system"]
+            or apk_inventory(args.candidate / "vendor", allow_empty=True) != verified_apks["vendor"]):
+        raise RuntimeError("APK inventory changed after signature verification")
+    system_attempts = pack_system_image(args.candidate / "tree", system_image,
+                                        layout["partitions"]["system"]["bytes"], args.records / "system-image.log")
     if not args.reuse_vendor_sha256:
         with vendor_image.open("xb") as stream:
             stream.truncate(layout["partitions"]["vendor"]["bytes"])
@@ -56,6 +101,8 @@ def main():
     with (args.records / "image-integrity.log").open("xb") as stream:
         subprocess.run(["fsck.erofs", "--extract", str(system_image)], stdout=stream, stderr=subprocess.STDOUT, check=True)
         subprocess.run(["e2fsck", "-fn", str(vendor_image)], stdout=stream, stderr=subprocess.STDOUT, check=True)
+    # Bind the bytes mounted below to the bytes eventually recorded and packed.
+    image_sha256 = {"system": digest(system_image), "vendor": digest(vendor_image)}
     comparisons = []
     with tempfile.TemporaryDirectory(prefix="s10-image-check-") as temporary:
         root = Path(temporary)
@@ -75,12 +122,21 @@ def main():
             subprocess.run(["mount", "-t", kind, "-o", "loop,ro,noload" if kind == "ext4" else "loop,ro",
                             str(image), str(mount)], check=True)
             try:
+                if compare_image_tree(expected_root, mount, ext4=name == "vendor") != tree_sha256[name]:
+                    raise RuntimeError("Complete packed filesystem differs from the candidate: " + name)
+                if tree_digest(expected_root) != tree_sha256[name]:
+                    raise RuntimeError("Candidate changed during packing: " + name)
                 if name == "system" and (expected_root / "adb_keys").is_file():
                     paths += ("adb_keys",)
                 if name == "system":
-                    for integration in ("samsung_camera_integration", "google_photos_integration", "s10_media_compatibility", "s10_personal_data_compatibility", "telemetry", "s10_display_defaults", "yurom_branding"):
+                    for integration in ("samsung_camera_integration", "google_photos_integration", "s10_media_compatibility", "s10_personal_data_compatibility", "telemetry", "s10_display_defaults", "yurom_branding", "donor_app_restoration", "s10_qs_sync_permission", "s10_qs_mobile_data"):
                         if manifest.get(integration):
                             paths += tuple("system/" + relative for relative in manifest[integration]["files"])
+                    if manifest.get("yurom_settings_removed"):
+                        paths += ("system/framework/framework.jar", "system/framework/services.jar",
+                                  "system/priv-app/SecSettings/SecSettings.apk",
+                                  "system/system_ext/priv-app/SystemUI/SystemUI.apk",
+                                  "system/priv-app/TouchWizHome_2017/TouchWizHome_2017.apk", "system/bin/vold")
                     if manifest.get("artisan_control"):
                         paths += ("system/framework/framework.jar", "system/framework/services.jar",
                                   "system/priv-app/SecSettings/SecSettings.apk",
@@ -111,14 +167,25 @@ def main():
                     comparisons.append(name + "/" + relative)
             finally:
                 subprocess.run(["umount", str(mount)], check=True)
-    report = {"capacity_checks": "passed", "erofs_full_decompression": "passed", "ext4_read_only_fsck": "passed",
-              "verified_contents_owner_mode_labels": comparisons, "device_boot_tested": False}
+    report = {"capacity_checks": "passed", "system_compression_attempts": system_attempts,
+              "erofs_full_decompression": "passed", "ext4_read_only_fsck": "passed",
+              "verified_contents_owner_mode_labels": comparisons, "complete_filesystems_compared": True,
+              "apk_signatures_verified": {name: len(files) for name, files in verified_apks.items()}, "device_boot_tested": False}
     with (args.records / "image-verification.json").open("x") as stream:
         json.dump(report, stream, indent=2)
         stream.write("\n")
-    result = {"schema": 1, "kind": "experimental-oneui9-s10-images", "model": model, "images": {}, "ready_for_installation": False}
+    if digest(args.candidate / "input.json") != input_sha256:
+        raise RuntimeError("Candidate metadata changed during packing")
+    if (tree_digest(args.candidate / "tree") != tree_sha256["system"]
+            or tree_digest(args.candidate / "vendor") != tree_sha256["vendor"]):
+        raise RuntimeError("Candidate changed after image verification")
+    if digest(system_image) != image_sha256["system"] or digest(vendor_image) != image_sha256["vendor"]:
+        raise RuntimeError("Image bytes changed during filesystem verification")
+    result = {"schema": 2, "kind": "experimental-oneui9-s10-images", "model": model, "images": {},
+              "input_sha256": input_sha256, "tree_sha256": tree_sha256,
+              "apk_signatures_verified": True, "ready_for_installation": False}
     for name, path in (("system", system_image), ("vendor", vendor_image)):
-        result["images"][path.name] = {"size": path.stat().st_size, "sha256": digest(path),
+        result["images"][path.name] = {"size": path.stat().st_size, "sha256": image_sha256[name],
                                       "partition_capacity": layout["partitions"][name]["bytes"]}
     with (args.candidate / "images.json").open("x") as stream:
         json.dump(result, stream, indent=2)

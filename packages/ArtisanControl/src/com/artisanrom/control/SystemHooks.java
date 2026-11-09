@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package com.artisanrom.control;
 
-import android.app.KeyguardManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -90,11 +89,18 @@ public final class SystemHooks {
         return c!=null && c.getSystemService(PowerManager.class).isInteractive()?null:original;
     }
 
-    private static final class Press implements Runnable {
-        final AudioManager audio; final int code; final int media; boolean longPress; boolean cancelled;
-        Press(AudioManager a, int c, int m) { audio = a; code = c; media = m; }
+    private static final class Press implements Runnable, AudioManager.OnModeChangedListener {
+        final AudioManager audio; final int media; boolean longPress; boolean cancelled;
+        Press(AudioManager a, int m) { audio = a; media = m; }
+        void register() { audio.addOnModeChangedListener(Runnable::run, this); }
+        void unregister() { audio.removeOnModeChangedListener(this); }
+        public void onModeChanged(int mode) {
+            if(mode == AudioManager.MODE_NORMAL)return;
+            synchronized(this) { cancelled=true; }
+            handler.removeCallbacks(this);
+        }
         public synchronized void run() {
-            if(cancelled)return;
+            if(cancelled || audio.getMode() != AudioManager.MODE_NORMAL){cancelled=true;return;}
             longPress = true;
             long now = SystemClock.uptimeMillis();
             audio.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, media, 0));
@@ -102,33 +108,62 @@ public final class SystemHooks {
         }
     }
 
-    public static boolean music(Object policy, KeyEvent event) {
+    public static synchronized boolean music(Object policy, KeyEvent event) {
         int code = event.getKeyCode();
         if (code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN) return false;
+        Press existing = presses.get(code);
+        // Always finish an intercepted key even if the context or mode changed.
+        if (event.getAction() == KeyEvent.ACTION_UP && existing != null) {
+            presses.remove(code); handler.removeCallbacks(existing);
+            try {
+                synchronized(existing){
+                    boolean adjust = !existing.cancelled && !existing.longPress && !event.isCanceled()
+                            && existing.audio.getMode() == AudioManager.MODE_NORMAL;
+                    existing.cancelled=true;
+                    if (adjust) existing.audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
+                            code == KeyEvent.KEYCODE_VOLUME_UP ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER, 0);
+                }
+            } catch (RuntimeException e) { Config.failure("volume adjustment",e); }
+            finally { try { existing.unregister(); } catch (RuntimeException e) { Config.failure("volume listener cleanup",e); } }
+            return true;
+        }
+        if (existing != null && event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            // Recover if the previous physical key-up was lost. A repeat event
+            // is not a new press and must not arm another listener.
+            presses.remove(code); handler.removeCallbacks(existing);
+            synchronized(existing) { existing.cancelled=true; }
+            try { existing.unregister(); } catch (RuntimeException e) { Config.failure("volume listener cleanup",e); }
+            existing=null;
+        }
+        if (existing != null) {
+            // Keep ownership until UP, including after a transient mode change.
+            if(existing.audio.getMode() != AudioManager.MODE_NORMAL) existing.onModeChanged(existing.audio.getMode());
+            return true;
+        }
         Context c = context(policy);
         if (c == null) return false;
         AudioManager audio = c.getSystemService(AudioManager.class);
         PowerManager power = c.getSystemService(PowerManager.class);
-        if (audio == null || power == null || audio.getMode() != AudioManager.MODE_NORMAL) return false;
-        Press existing = presses.get(code);
-        if (event.getAction() == KeyEvent.ACTION_UP && existing != null) {
-            presses.remove(code); handler.removeCallbacks(existing);
-            synchronized(existing){
-                existing.cancelled=true;
-                if (!existing.longPress && !event.isCanceled()) audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
-                        code == KeyEvent.KEYCODE_VOLUME_UP ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER, 0);
+        if (audio == null || power == null || audio.getMode() != AudioManager.MODE_NORMAL
+                || !Config.on("ac_volume_music") || power.isInteractive() || !audio.isMusicActive()) return false;
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            int media = Config.integer(code == KeyEvent.KEYCODE_VOLUME_UP ? "ac_volume_up_action" : "ac_volume_down_action",
+                    code == KeyEvent.KEYCODE_VOLUME_UP ? KeyEvent.KEYCODE_MEDIA_NEXT : KeyEvent.KEYCODE_MEDIA_PREVIOUS, 85, 87 + 1);
+            Press press = new Press(audio, media);
+            try { press.register(); } catch (RuntimeException e) {
+                try { press.unregister(); } catch (RuntimeException ignored) { }
+                Config.failure("volume mode listener",e); return false;
             }
-            return true;
-        }
-        if (!Config.on("ac_volume_music") || power.isInteractive() || !audio.isMusicActive()) return false;
-        if (event.getAction() == KeyEvent.ACTION_DOWN) {
-            if (existing == null) {
-                int media = Config.integer(code == KeyEvent.KEYCODE_VOLUME_UP ? "ac_volume_up_action" : "ac_volume_down_action",
-                        code == KeyEvent.KEYCODE_VOLUME_UP ? KeyEvent.KEYCODE_MEDIA_NEXT : KeyEvent.KEYCODE_MEDIA_PREVIOUS, 85, 87 + 1);
-                Press press = new Press(audio, code, media); presses.put(code, press);
-                handler.postDelayed(press, Config.integer("ac_volume_hold_ms", 600, 300, 1500));
+            synchronized(press) {
+                if(press.cancelled || audio.getMode() != AudioManager.MODE_NORMAL) {
+                    press.cancelled=true;
+                } else {
+                    presses.put(code, press);
+                    handler.postDelayed(press, Config.integer("ac_volume_hold_ms", 600, 300, 1500));
+                    return true;
+                }
             }
-            return true;
+            try { press.unregister(); } catch (RuntimeException e) { Config.failure("volume listener cleanup",e); }
         }
         return false;
     }

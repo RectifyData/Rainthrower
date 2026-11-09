@@ -13,6 +13,7 @@ import zipfile
 
 from build_artisan_control import dex_classes, retain_oem_certificate
 from s10_models import ROOT, digest
+from s10_dex_integrity import assembler_api, validate_dex
 
 BASELINE_OUTPUTS = {
     "services.jar": "3740c04896ec8f39b29b0dd911da30687a5570aa75e5916ee52f5e8596be5a35",
@@ -92,6 +93,8 @@ def build(baseline, output, records, build_tools):
                 if len(entries) != 1:
                     raise ValueError("Missing or duplicate fingerprint feature owner: " + name)
                 entry = entries[0]
+                original_dex = source.read(entry)
+                version, api = validate_dex(original_dex), assembler_api(original_dex)
                 folder = temp / name
                 subprocess.run(["baksmali", "d", "--debug-info", "false", "-l", "-j", "8", "-o", str(folder),
                                 str(original) + "/" + entry], stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -104,9 +107,10 @@ def build(baseline, output, records, build_tools):
                     if 'const-string p2, "!"' not in ce.read_text():
                         raise ValueError("The V23 tokenless-CE fix is missing")
                 dex = temp / (name + ".dex")
-                subprocess.run(["smali", "a", "-a", "35", "-j", "8", "-o", str(dex), str(folder)],
+                subprocess.run(["smali", "a", "-a", str(api), "-j", "8", "-o", str(dex), str(folder)],
                                stdout=log, stderr=subprocess.STDOUT, check=True)
-                if set(dex_classes(dex.read_bytes())) != set(dex_classes(source.read(entry))):
+                validate_dex(dex.read_bytes(), version)
+                if set(dex_classes(dex.read_bytes())) != set(dex_classes(original_dex)):
                     raise ValueError("Fingerprint adaptation changed the class inventory")
                 target = output / name
                 with zipfile.ZipFile(target, "w") as packed:

@@ -25,10 +25,23 @@ def main(args):
     assert not (args.candidate / "tree/adb_keys").exists() and not (system / "etc/security/adb_keys").exists()
     assert digest(system / "bin/vold") == "1856ffbd5dfd3922c0987fced54031e40ebad03bc84c6b0f540995946dbc7009"
     bundle = json.loads((args.bundle / "manifest.json").read_text())
-    for label, spec in bundle["inputs"].items():
-        target = system / spec["path"]
-        assert digest(target) == bundle["outputs"][label + target.suffix]
-    assert digest(system / "framework/artisan-control-broker.jar") == bundle["outputs"]["ArtisanControlBroker.jar"]
+    if model == 'SM-G975F':
+        assert manifest['yurom_settings_removed'] and manifest['artisan_control'] is None
+        assert manifest['s10_qs_mobile_data']['files'] == manifest['s10_qs_sync_permission']['files']
+        assert manifest['s10_qs_mobile_data']['scoped_to_default_data_subscription']
+        for label, spec in bundle['inputs'].items():
+            expected = (manifest['s10_ce_storage_compatibility']['services_sha256']
+                        if label == 'services' else
+                        manifest['s10_qs_sync_permission']['files'][spec['path']]
+                        if label == 'systemui' else spec['sha256'])
+            assert digest(system / spec['path']) == expected
+        assert not (system / 'framework/artisan-control-broker.jar').exists()
+        assert not (system / 'etc/init/artisan-control.rc').exists()
+    else:
+        for label, spec in bundle["inputs"].items():
+            target = system / spec["path"]
+            assert digest(target) == bundle["outputs"][label + target.suffix]
+        assert digest(system / "framework/artisan-control-broker.jar") == bundle["outputs"]["ArtisanControlBroker.jar"]
     if manifest.get("s10_personal_data_compatibility"):
         from s10_personal_data import FEATURE
         features = {node.tag: node.text for node in ET.parse(system / "etc/floating_feature.xml").getroot()}

@@ -93,9 +93,14 @@ def verify_family_stock(root, model):
 
 def render_installer(model):
     profile = MODELS[model]
-    template = (ROOT / "target/beyond1lte/oneui9/installer/update-binary").read_text()
+    template = (ROOT / "scripts/oneui9_installer/update-binary").read_text()
     if model == "SM-G973F":
         return template
-    return (template.replace("G973F", model.removeprefix("SM-"))
-            .replace("beyond1lte", profile["device"]).replace("beyond1|", profile["device"].removesuffix("lte") + "|")
-            .replace("HWC1-base", "HWC2-base"))
+    rendered = (template.replace("G973F", model.removeprefix("SM-"))
+                .replace("beyond1lte", profile["device"]).replace("beyond1|", profile["device"].removesuffix("lte") + "|")
+                .replace("HWC1-base", "HWC2-base"))
+    if model == "SM-G975F":
+        if rendered.count("ALLOW_LARGER_OS_PARTITIONS=false") != 1:
+            raise ValueError("Installer partition policy marker changed")
+        rendered = rendered.replace("ALLOW_LARGER_OS_PARTITIONS=false", "ALLOW_LARGER_OS_PARTITIONS=true")
+    return rendered

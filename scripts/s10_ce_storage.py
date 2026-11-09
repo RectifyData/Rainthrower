@@ -4,6 +4,7 @@
 import copy
 import hashlib
 from pathlib import Path
+from s10_dex_integrity import assembler_api, validate_dex
 import re
 import subprocess
 import tempfile
@@ -42,11 +43,13 @@ def configure_tokenless_ce(system):
                 if re.fullmatch(r"classes\d*\.dex",name) and OWNER in dex_classes(original.read(name)):matches.append(name)
             if len(matches)!=1:raise ValueError("CE storage owner must occur in exactly one DEX")
             entry=matches[0];smali=folder/"smali"
+            original_dex=original.read(entry); version=validate_dex(original_dex); api=assembler_api(original_dex)
             subprocess.run(["baksmali","d","--debug-info","false","-l","-j","8","-o",str(smali),str(services)+"/"+entry],check=True,capture_output=True)
             source=smali/(OWNER[1:-1]+".smali");source.write_text(patch_smali(source.read_text()))
             dex=folder/"patched.dex"
-            subprocess.run(["smali","a","-a","35","-j","8","-o",str(dex),str(smali)],check=True,capture_output=True)
-            if set(dex_classes(dex.read_bytes()))!=set(dex_classes(original.read(entry))):raise ValueError("CE compatibility changed the class inventory")
+            subprocess.run(["smali","a","-a",str(api),"-j","8","-o",str(dex),str(smali)],check=True,capture_output=True)
+            validate_dex(dex.read_bytes(), version)
+            if set(dex_classes(dex.read_bytes()))!=set(dex_classes(original_dex)):raise ValueError("CE compatibility changed the class inventory")
             output=folder/"services.jar"
             with zipfile.ZipFile(output,"w") as target:
                 for item in original.infolist():target.writestr(copy.copy(item),dex.read_bytes() if item.filename==entry else original.read(item.filename))
