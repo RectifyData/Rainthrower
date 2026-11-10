@@ -60,4 +60,7 @@ The recorded reference S10 acceptance covers exact system-image readback,
 normal boot, encrypted userdata access and both Settings GitHub links. A prior
 native clean installation used V32. The full V35 Beta ZIP has not been
 clean-installed on a phone; S10e/S10+ physical validation remains pending.
-SELinux is Permissive in the accepted device configuration.
+SELinux was Permissive in the recorded reference acceptance. The candidate
+builder in this tree (`scripts/prepare_oneui9_s10_candidate.py`) patches the
+pinned init to enforcing, but enforcing operation on a physical device is not
+validated (`selinux_enforcing_validated: false` in every package manifest).

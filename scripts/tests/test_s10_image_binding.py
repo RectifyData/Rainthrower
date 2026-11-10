@@ -65,7 +65,7 @@ class ImageBindingTest(unittest.TestCase):
         self.assertEqual(tree_digest(mounted, ignore_lost_found=True), tree_digest(self.vendor))
         self.assertEqual(compare_image_tree(self.vendor, mounted, ext4=True), tree_digest(self.vendor))
         (mounted / 'lost+found' / 'hidden').write_bytes(b'bad')
-        with self.assertRaisesRegex(ValueError, 'lost\+found'):
+        with self.assertRaisesRegex(ValueError, r'lost\+found'):
             compare_image_tree(self.vendor, mounted, ext4=True)
         (mounted / 'lost+found' / 'hidden').unlink()
         (mounted / 'unexpected').write_bytes(b'bad')
