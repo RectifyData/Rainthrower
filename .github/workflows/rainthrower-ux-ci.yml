@@ -1,0 +1,37 @@
+name: Rainthrower S10 source guards
+
+on:
+  push:
+    branches: [release/v35-beta, 'fix/**']
+  pull_request:
+    branches: [release/v35-beta]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-guards:
+    name: Source-only regression checks (no firmware flashing)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Syntax and compile checks
+        run: |
+          python3 -m compileall -q scripts
+          bash -n scripts/generate_ota_manifest.sh
+          sh -n scripts/oneui9_installer/update-binary
+          sh -n target/beyond1lte/patches/user_defaults/system/system/etc/s10-user-defaults.sh
+          sh -n target/beyond1lte/patches/user_defaults/system/system/etc/init/s10-user-defaults.rc
+      - name: UX and installer guard regressions
+        run: |
+          python3 scripts/tests/test_rainthrower_ux_guards.py
+          python3 scripts/tests/test_s10_user_defaults.py
+          python3 scripts/tests/test_oneui9_installer_preflight.py
+      - name: Document validation limits
+        run: |
+          echo 'Static source checks only. No S10 boot, GMS, call, CE unlock, NFC, camera, Wi-Fi Direct or SystemUI runtime acceptance performed.'

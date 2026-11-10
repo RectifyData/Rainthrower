@@ -1,4 +1,6 @@
-# YuROM Ultra One UI 9 — G973F TWRP Beta package
+# Rainthrower development One UI 9 — G973F clean-install-only package
+
+**Not the upstream R32 no-wipe upgrade installer.** Only a clean installation is supported by this source-built ZIP; never use it as an update over existing encrypted userdata. Physical model-specific acceptance remains pending.
 
 ## Supported hardware
 
