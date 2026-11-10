@@ -15,6 +15,17 @@ PRINT_USAGE()
     echo " - logs ($OUT_DIR/**.log)" >&2
     echo " - tools ($TOOLS_DIR)" >&2
 }
+
+SAFE_RM()
+{
+    # Never delete an empty, root or out-of-tree path, even if a variable is unset.
+    local TARGET="$1"
+    if [ -z "$SRC_DIR" ] || [ -z "$TARGET" ] || [[ "$TARGET" == "/" ]] || [[ "$TARGET" != "$SRC_DIR/"* ]]; then
+        LOGE "Refusing to remove \"$TARGET\": it is empty or outside of \"$SRC_DIR\""
+        return 1
+    fi
+    rm -rf -- "$TARGET"
+}
 # ]
 
 if [ "$#" == 0 ]; then
@@ -26,29 +37,29 @@ while [ "$#" != 0 ]; do
     case "$1" in
         "all")
             LOG "- Cleaning everything..."
-            rm -rf "$OUT_DIR"
+            SAFE_RM "$OUT_DIR" || exit 1
             break
             ;;
         "odin")
             LOG "- Cleaning Odin firmwares dir..."
-            rm -rf "$ODIN_DIR"
+            SAFE_RM "$ODIN_DIR" || exit 1
             ;;
         "fw")
             LOG "- Cleaning extracted firmwares dir..."
-            rm -rf "$FW_DIR"
+            SAFE_RM "$FW_DIR" || exit 1
             ;;
         "work_dir")
             LOG "- Cleaning ROM work dir..."
-            rm -rf "$(dirname "$WORK_DIR")"
+            SAFE_RM "$(dirname "$WORK_DIR")" || exit 1
             mkdir -p "$(dirname "$WORK_DIR")"
             ;;
         "logs")
             LOG "- Cleaning log files..."
-            find "$OUT_DIR" -type f -name "*.log" -delete
+            [ -n "$OUT_DIR" ] && [ -d "$OUT_DIR" ] && find "$OUT_DIR" -type f -name "*.log" -delete
             ;;
         "tools")
             LOG "- Cleaning dependencies dir..."
-            rm -rf "$TOOLS_DIR"
+            SAFE_RM "$TOOLS_DIR" || exit 1
             git submodule foreach --recursive "git clean -f -d -x" &> /dev/null
             ;;
         *)
