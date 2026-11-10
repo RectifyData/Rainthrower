@@ -2,6 +2,14 @@
 
 [← Project home](README.md) · [R32 downloads](https://github.com/yuefdev/YuROM-Ultra/releases/tag/v35-r32) · [Detailed release notes](https://github.com/yuefdev/YuROM-Ultra/releases/download/v35-r32/RELEASE_NOTES.md)
 
+> **Source note.** The installer committed in this repository
+> (`scripts/oneui9_installer/update-binary`) is the clean-install installer: it
+> verifies the model and layout, never formats, and aborts before writing
+> anything if Android userdata exists. The data-preserving upgrade path
+> described below is implemented by the R32 installer sources that ship as a
+> release asset and are not committed here, so a ZIP built from this tree will
+> refuse to install over existing userdata.
+
 ## Supported devices and firmware
 
 | Device | Model | Codename | Required firmware base |
