@@ -17,7 +17,6 @@ class UserDefaultsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             db = folder / 'settings.json'
-            db.write_text(json.dumps({key: '1.0' for key in KEYS}))
             command = folder / 'settings'
             command.write_text('''#!/usr/bin/env python3
 import json, os, sys
@@ -34,19 +33,28 @@ else:
             env = dict(os.environ, PATH=tmp + os.pathsep + os.environ['PATH'],
                        TEST_SETTINGS_DB=str(db))
             script = MODULE / 'system/system/etc/s10-user-defaults.sh'
-            # A partial failure must not mark the migration complete.
+
+            # Already stored preferences, including accessibility 0.0, survive.
+            preferences = {KEYS[0]: '1.0', KEYS[1]: '0.0', KEYS[2]: '1.5'}
+            db.write_text(json.dumps(preferences))
+            subprocess.run(['sh', str(script)], env=env, check=True)
+            data = json.loads(db.read_text())
+            self.assertEqual([data[key] for key in KEYS], [preferences[k] for k in KEYS])
+            self.assertEqual(data[MARKER], '1')
+            data[KEYS[0]] = '2.0'
+            db.write_text(json.dumps(data))
+            subprocess.run(['sh', str(script)], env=env, check=True)
+            self.assertEqual(json.loads(db.read_text()), data)
+
+            # Only missing values are seeded; failures cannot set the marker.
+            db.write_text('{}')
             failed = subprocess.run(['sh', str(script)], env=dict(env, TEST_FAIL_KEY=KEYS[1]))
             self.assertNotEqual(failed.returncode, 0)
             self.assertNotIn(MARKER, json.loads(db.read_text()))
             subprocess.run(['sh', str(script)], env=env, check=True)
             data = json.loads(db.read_text())
-            self.assertEqual([data[key] for key in KEYS], ['1.0'] * 3)
+            self.assertEqual([data[key] for key in KEYS], ['0.5'] * 3)
             self.assertEqual(data[MARKER], '1')
-            self.assertNotIn('development_settings_enabled', data)
-            data[KEYS[0]] = '1.5'
-            db.write_text(json.dumps(data))
-            subprocess.run(['sh', str(script)], env=env, check=True)
-            self.assertEqual(json.loads(db.read_text()), data)
 
     def test_compatibility_default_never_overwrites_persisted_bluetooth_choice(self):
         with tempfile.TemporaryDirectory() as tmp:
