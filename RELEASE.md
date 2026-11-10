@@ -1,5 +1,14 @@
 # YuROM Ultra V35 R32 · Installation guide
 
+> **Important — source-built Rainthrower firmware:** This page documents the
+> upstream R32 distribution, not this repository's standalone Python packager.
+> `scripts/build_s10_twrp.py` and `scripts/oneui9_installer/update-binary`
+> currently generate **clean-install-only** development archives and reject
+> existing userdata. Do not apply the R32 no-wipe upgrade instructions to those
+> source-built archives. Only an installer with independently verified,
+> exact-source-image upgrade support may offer a no-wipe path.
+
+
 [← Project home](README.md) · [R32 downloads](https://github.com/yuefdev/YuROM-Ultra/releases/tag/v35-r32) · [Detailed release notes](https://github.com/yuefdev/YuROM-Ultra/releases/download/v35-r32/RELEASE_NOTES.md)
 
 ## Supported devices and firmware

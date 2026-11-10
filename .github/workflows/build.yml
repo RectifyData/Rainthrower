@@ -1,4 +1,4 @@
-name: Build
+name: Legacy donor build (manual, experimental)
 
 on:
   workflow_dispatch:
@@ -11,10 +11,9 @@ on:
           - test
           - release
         default: debug
-  pull_request:
-  push:
-    branches:
-      - 'sixteen'
+
+permissions:
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -107,8 +106,8 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           PIXELDRAIN_API_KEY: ${{ secrets.PD_API }}
-          GH_TOKEN: ${{ secrets.PAT }}
-          RELEASE_REPO: "ArtisanROM/rom_resources"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REPO: "${{ github.repository }}"
           BUILD_TYPE: ${{ github.event.inputs.build_type }}
         run: |
           mkdir -p split_tmp
@@ -148,7 +147,7 @@ jobs:
               RELEASE_DATA=$(jq -n \
                 --arg tag "$TAG_NAME" \
                 --arg name "$RELEASE_NAME" \
-                '{ tag_name: $tag, name: $name, draft: false, prerelease: false }')
+                '{ tag_name: $tag, name: $name, draft: false, prerelease: true, body: "EXPERIMENTAL UNVERIFIED ROM. NOT SAFE TO FLASH without per-model physical acceptance." }')
 
               RELEASE_RESPONSE=$(curl -s -X POST \
                 -H "Authorization: token $GH_TOKEN" \
@@ -179,16 +178,16 @@ jobs:
             # Generate OTA XML for release only
             if [ "$BUILD_TYPE" = "release" ]; then
               echo "Generating OTA XML..."
-              git clone --single-branch --branch main https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} updater_repo
+              git clone --single-branch --branch "${{ github.event.repository.default_branch }}" https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} updater_repo
               cd updater_repo
-              git checkout main
-              mkdir -p updater
+              git checkout "${{ github.event.repository.default_branch }}"
+              mkdir -p updater/v2
               XML_FILE="updater/v2/${{ matrix.target }}.xml"
 
               {
                 echo '<?xml version="1.0" encoding="UTF-8"?>'
                 echo '<roms>'
-                echo '  <rom channel="stable">'
+                echo '  <rom channel="experimental">'
                 echo "    <version>$VERSION</version>"
                 echo "    <date>$BUILD_DATE</date>"
                 echo "    <filename>$FILE_NAME</filename>"
@@ -209,8 +208,8 @@ jobs:
 
               git add $XML_FILE
               git commit -m "updater: v2: ${{ matrix.target }}.xml: Update to $VERSION" || true
-              git pull --rebase origin main
-              git push origin main
+              git pull --rebase origin "${{ github.event.repository.default_branch }}"
+              git push origin "${{ github.event.repository.default_branch }}"
               cd ..
             fi
           done

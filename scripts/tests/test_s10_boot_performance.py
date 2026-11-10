@@ -34,8 +34,8 @@ class Fixture:
     case "$1" in */sys/kernel/gpu/gpu_max_clock) if [ "$(/bin/cat "$1")" = 0 ]; then echo 123; exit; fi ;; esac
 fi
 if [ "${FAKE_READBACK_FAILURE:-0}" = 1 ]; then
-    case "$1" in */big_margin_percent)
-        if [ "$(/bin/cat "$1")" = -3 ]; then echo 0; exit; fi ;;
+    case "$1" in */sys/kernel/gpu/gpu_max_clock)
+        if [ "$(/bin/cat "$1")" = 650000 ]; then echo 123; exit; fi ;;
     esac
 fi
 exec /bin/cat "$@"''')
@@ -115,9 +115,9 @@ def main():
         assert (normal.state / "generation").read_text() == generation
         assert normal.property() == "applied"
         assert not (normal.state / "pending").exists()
-        assert all(normal.get(f"power/percent_margin/{domain}_margin_percent") == "-3"
+        assert all(normal.get(f"power/percent_margin/{domain}_margin_percent") == "0"
                    for domain in ("big", "mid", "lit", "g3d"))
-        assert normal.get("devices/system/cpu/cpufreq/policy6/scaling_max_freq") == "3016000"
+        assert normal.get("devices/system/cpu/cpufreq/policy6/scaling_max_freq") == "2730000"
         assert all(normal.get(f"devices/system/cpu/cpufreq/policy{cpu}/schedutil/up_rate_limit_us") == "1000"
                    for cpu in (0, 4))
         normal.run("disable")
@@ -195,7 +195,7 @@ def main():
         control_pending.run("boot")
         control_pending.stock_profile()
         assert control_pending.property() == "applied"
-    print("PASS: boot profile, disabled/re-enable, wrong kernel, interrupted boot, readback/restart rollback, saved auto/stock/OC and controller-crash cold starts")
+    print("PASS: stock-default boot profile, disabled/re-enable, wrong kernel, interrupted boot, readback/restart rollback, saved auto/stock/OC and controller-crash cold starts")
 
 
 if __name__ == "__main__":

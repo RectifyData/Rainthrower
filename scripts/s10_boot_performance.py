@@ -68,7 +68,8 @@ def configure_boot_performance(vendor, reference_vendor=None, model="SM-G973F", 
     return {"files": files, "inputs": {}, "trigger": "sys.boot_completed=1",
             "service": "vendor.s10-performance", "oneshot": True,
             "kernel_sha256": boot_sha,
-            "voltage_margin_percent": -3, "m4_ceiling_khz": 3016000,
+            "voltage_margin_percent": 0, "m4_ceiling_khz": 2730000,
+            "boot_default_stock": True, "experimental_oc_ceiling_khz": 3016000,
             "interrupted_application_disables_future_attempts": True,
             "charging_state_changed": False, "device_boot_tested": False}
 

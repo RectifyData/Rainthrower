@@ -110,17 +110,17 @@ Run `scripts/tests/test_s10_native_zygote.py --system <candidate>/tree/system`
 to verify the actual mask, supported drops and unknown-input rejection.
 
 The checksum-pinned GPU806 kernel also has a vendor oneshot performance service.
-After `sys.boot_completed=1`, it requests CPU ceilings of 2106/2400/3016 MHz,
-an 806 MHz GPU ceiling, -3% CPU/GPU voltage margins and 1 ms LITTLE/MID
-schedutil up limits. Thermal and over-current limits can reduce effective clocks.
-Other boot images are skipped. An interrupted application or Android restart
-during the initial 30-second observation disables subsequent automatic attempts.
-Use `sh /vendor/etc/s10-performance-profile.sh disable` to disable automatic
-application and restore normal margins/clocks; `enable` explicitly re-enables it.
-The script is independent of diagnostic files and does not alter charging.
-Run `python3 -B scripts/tests/test_s10_boot_performance.py` for the focused
-application, wrong-kernel, interrupted-boot and rollback checks. Live permissive
-boot validation does not establish enforcing-policy compatibility.
+After `sys.boot_completed=1`, startup now **defaults to stock CPU ceilings
+(1950/2314/2730 MHz), a 650 MHz GPU ceiling and zero voltage offset**.
+This avoids automatic OC/undervolt on unvalidated hardware and on the S10+
+candidate, which lacks the native adaptive controls. A separately validated
+adaptive broker may still request optional profiles; these do not constitute
+a guarantee of long-term OC stability. The 30-second startup health window
+and fail-closed rollback remain in place. Use `sh
+/vendor/etc/s10-performance-profile.sh disable` to disable the service;
+`enable` re-enables its stock-safe startup behavior. The script never changes
+charging configuration. Run `python3 -B scripts/tests/test_s10_boot_performance.py`
+for isolated host regressions; physical thermals and load testing remain pending.
 
 With Unicorn 2.1.4 installed in the test environment, run:
 

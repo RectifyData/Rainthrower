@@ -111,13 +111,12 @@ restore() {
 }
 
 apply_profile() {
-    lit_max=2106000; mid_max=2400000; big_max=3016000; gpu_max=806000; margin=-3
-    # Start saved adaptive/stock modes without a static OC/UV interval while
-    # the broker waits for this script's boot health window to complete.
-    if [ -f "$CONTROL/performance-pending" ] || { [ -f "$CONTROL/performance.json" ] &&
-        grep -Eq '"mode"[[:space:]]*:[[:space:]]*"(auto|oc|stock)"' "$CONTROL/performance.json"; }; then
-        lit_max=1950000; mid_max=2314000; big_max=2730000; gpu_max=650000; margin=0
-    fi
+    # Default to previously supported stock ceilings. Automatic OC/undervolt
+    # is unsafe on unvalidated model-specific builds and particularly when
+    # native Settings' adaptive broker is unavailable (S10+ candidate).
+    # The supported broker may still apply an explicitly requested profile
+    # separately after the startup health window.
+    lit_max=1950000; mid_max=2314000; big_max=2730000; gpu_max=650000; margin=0
     for domain in big mid lit g3d; do
         case "$(cat "$SYS/power/percent_margin/${domain}_margin_percent")" in
             0|-1|-2|-3) ;; *) return 1 ;;

@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # UN1CA debloat list
+# Rainthrower preserves stock Clock/alarms, Calendar, Notes, Reminder and
+# accessibility services. Keep them in final APK inventory validation.
 # - Add entries inside the specific partition containing that file (<PARTITION>_DEBLOAT+="")
 # - DO NOT add the partition name at the start of any entry (eg. "/system/dpolicy_system")
 # - DO NOT add a slash at the start of any entry (eg. "/dpolicy_system")
@@ -151,7 +153,6 @@ system/app/KidsHome_Installer
 
 # Samsung Notes
 SYSTEM_DEBLOAT+="
-system/app/Notes40
 "
 
 # Bixby
@@ -191,8 +192,6 @@ system/priv-app/YourPhone_P1_5
 
 # Live Transcribe
 SYSTEM_DEBLOAT+="
-system/app/LiveTranscribe
-system/etc/sysconfig/feature-a11y-preload.xml
 "
 
 # Meta
@@ -244,12 +243,10 @@ system/priv-app/StickerFaceARAvatar
 
 # Samsung Calendar
 SYSTEM_DEBLOAT+="
-system/app/SamsungCalendar
 "
 
 # Samsung Clock
 SYSTEM_DEBLOAT+="
-system/app/ClockPackage
 "
 
 # Samsung Free
@@ -285,7 +282,6 @@ system/priv-app/SamsungPass
 
 # Samsung Reminder
 SYSTEM_DEBLOAT+="
-system/app/SmartReminder
 "
 
 # Samsung Visit In
@@ -362,8 +358,6 @@ system/priv-app/SVoiceIME
 
 # Voice Access
 SYSTEM_DEBLOAT+="
-system/app/VoiceAccess
-system/etc/sysconfig/feature-a11y-preload-voacc.xml
 "
 
 # YouTube

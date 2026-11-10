@@ -55,6 +55,10 @@ controls keep the Samsung experience at the centre.
 
 **Exynos only.** Not for Snapdragon devices, Korean N variants or the S10 5G.
 
+## Development source versus R32 distribution
+
+This fork includes experimental S10 source-build paths that are **not** the complete upstream R32 installer. The standalone Python build path is **clean-install-only**, and no full-family flash or credential-unlock acceptance is established for its generated ZIPs. Consult the exact artifact's manifest, not R32's upgrade instructions, before choosing a recovery procedure.
+
 ## Download and install
 
 1. **[Google Drive: complete ZIPs](https://drive.google.com/drive/folders/1vLh8Ph07n7LyGFLhw2T9XUOmm2U5KwxZ)**
