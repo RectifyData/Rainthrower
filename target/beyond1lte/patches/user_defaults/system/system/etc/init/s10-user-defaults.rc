@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Keep the software-only policy if another component changes the saved value.
-# The false-only trigger cannot loop when the value is restored to true.
-on property:persist.bluetooth.a2dp_offload.disabled=false
-    setprop persist.bluetooth.a2dp_offload.disabled true
-
+# One-time missing-value defaults only. Never override saved Bluetooth offload
+# preferences after load_persist_props; that setting belongs to the user.
 service s10-user-defaults /system/bin/sh /system/etc/s10-user-defaults.sh
     class late_start
     user shell

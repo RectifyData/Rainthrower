@@ -9,7 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / 'target/beyond1lte/patches/user_defaults'
 KEYS = ('window_animation_scale', 'transition_animation_scale', 'animator_duration_scale')
-MARKER = 'artisanrom_s10_animation_defaults_version'
+MARKER = 'artisanrom_s10_animation_defaults_version_2'
 
 
 class UserDefaultsTests(unittest.TestCase):
@@ -40,7 +40,7 @@ else:
             self.assertNotIn(MARKER, json.loads(db.read_text()))
             subprocess.run(['sh', str(script)], env=env, check=True)
             data = json.loads(db.read_text())
-            self.assertEqual([data[key] for key in KEYS], ['0.5'] * 3)
+            self.assertEqual([data[key] for key in KEYS], ['1.0'] * 3)
             self.assertEqual(data[MARKER], '1')
             self.assertNotIn('development_settings_enabled', data)
             data[KEYS[0]] = '1.5'
@@ -48,7 +48,7 @@ else:
             subprocess.run(['sh', str(script)], env=env, check=True)
             self.assertEqual(json.loads(db.read_text()), data)
 
-    def test_init_insertion_is_ordered_idempotent_and_guarded(self):
+    def test_compatibility_default_never_overwrites_persisted_bluetooth_choice(self):
         with tempfile.TemporaryDirectory() as tmp:
             rc = Path(tmp) / 'system/system/etc/init/hw/init.rc'
             rc.parent.mkdir(parents=True)
@@ -58,9 +58,6 @@ else:
                        'test', str(MODULE / 'customize.sh')]
             for _ in range(2):
                 subprocess.run(command, env=env, check=True)
-            self.assertEqual(rc.read_text().count('setprop persist.bluetooth'), 1)
-            self.assertIn('load_persist_props\n    setprop persist.bluetooth.a2dp_offload.disabled true\n    start apexd', rc.read_text())
-            rc.write_text('on boot\n    start apexd\n')
-            result = subprocess.run(command, env=env, capture_output=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(rc.read_text(), 'on boot\n    start apexd\n')
+            self.assertEqual(rc.read_text(), 'on post-fs-data\n    load_persist_props\n    start apexd\n')
+            self.assertNotIn('setprop persist.bluetooth', (MODULE / 'system/system/etc/init/s10-user-defaults.rc').read_text())
+            self.assertNotIn('load_persist_props', (MODULE / 'customize.sh').read_text())
