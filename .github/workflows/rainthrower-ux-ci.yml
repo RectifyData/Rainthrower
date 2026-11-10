@@ -32,6 +32,35 @@ jobs:
           python3 scripts/tests/test_rainthrower_ux_guards.py
           python3 scripts/tests/test_s10_user_defaults.py
           python3 scripts/tests/test_oneui9_installer_preflight.py
+      - name: Device-script fixture regressions
+        run: |
+          python3 scripts/tests/test_s10_display_defaults.py
+          python3 scripts/tests/test_s10_boot_performance.py
+          python3 scripts/tests/test_s10_qs_sync_permission.py
+          python3 scripts/tests/test_s10_qs_mobile_data.py
+          python3 scripts/tests/test_s10_twrp_bootstrap.py
       - name: Document validation limits
         run: |
           echo 'Static source checks only. No S10 boot, GMS, call, CE unlock, NFC, camera, Wi-Fi Direct or SystemUI runtime acceptance performed.'
+
+  source-review-prerelease:
+    name: Publish source-only review prerelease (never a flashable ROM)
+    needs: source-guards
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release/v35-beta'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish source review after source guards pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=source-ux-fixes-2026-11-10
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo 'Source review release already exists.'
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --prerelease \
+            --title 'Rainthrower UX source fixes — hardware unverified' \
+            --notes 'SOURCE ONLY — NOT A FLASHABLE ROM. Fixes source defects in thermal configuration, app preservation, user defaults, OTA metadata, and workflow safety. No hardware boot, encryption, calls, camera, SystemUI, or Wi-Fi Direct compatibility is certified. Do not flash this source archive as firmware.'
